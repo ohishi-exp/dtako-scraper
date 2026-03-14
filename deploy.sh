@@ -14,6 +14,14 @@ docker build --build-arg CARGO_BUILD_JOBS=2 -t "$IMAGE" .
 echo "==> Pushing to Artifact Registry..."
 docker push "$IMAGE"
 
+echo "==> Generating env-vars file..."
+ENV_FILE=$(mktemp /tmp/env-vars-XXXXXX.yaml)
+cat > "$ENV_FILE" <<ENVEOF
+DTAKO_ACCOUNTS: '${DTAKO_ACCOUNTS}'
+DAIUN_SALARY_URL: '${DAIUN_SALARY_URL}'
+DOWNLOAD_DIR: /app/downloads
+ENVEOF
+
 echo "==> Deploying to Cloud Run..."
 gcloud run deploy dtako-scraper \
   --image "$IMAGE" \
@@ -26,9 +34,9 @@ gcloud run deploy dtako-scraper \
   --timeout 600 \
   --min-instances 0 \
   --max-instances 1 \
-  --set-env-vars "DTAKO_ACCOUNTS=${DTAKO_ACCOUNTS}" \
-  --set-env-vars "DAIUN_SALARY_URL=${DAIUN_SALARY_URL}" \
-  --set-env-vars "DOWNLOAD_DIR=/app/downloads"
+  --env-vars-file "$ENV_FILE"
+
+rm -f "$ENV_FILE"
 
 echo "==> Done!"
 gcloud run services describe dtako-scraper --region=asia-northeast1 --format="value(status.url)"

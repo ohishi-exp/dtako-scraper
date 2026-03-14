@@ -5,6 +5,7 @@ mod scraper;
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, routing::{get, post}, Json, Router};
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -17,8 +18,10 @@ struct AppState {
 
 #[derive(Deserialize)]
 struct ScrapeRequest {
-    start_date: String, // "YYYY-MM-DD"
-    end_date: String,   // "YYYY-MM-DD"
+    /// 省略時は前日
+    start_date: Option<String>, // "YYYY-MM-DD"
+    /// 省略時は前日
+    end_date: Option<String>,   // "YYYY-MM-DD"
     /// 特定の企業CDのみ実行（省略時は全企業）
     comp_id: Option<String>,
     /// アップロードをスキップ（テスト用）
@@ -72,11 +75,17 @@ async fn scrape_handler(
 
     let mut results = Vec::new();
 
+    let yesterday = (Local::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let start_date = req.start_date.as_deref().unwrap_or(&yesterday);
+    let end_date = req.end_date.as_deref().unwrap_or(&yesterday);
+
     for account in accounts {
         let result = scraper::scrape(
             account,
-            &req.start_date,
-            &req.end_date,
+            start_date,
+            end_date,
             &state.config.download_dir,
             &state.config.daiun_salary_url,
             req.skip_upload,
