@@ -35,7 +35,7 @@ pub async fn upload_zip(
     let resp = client
         .post(&url)
         .multipart(form)
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(180))
         .send()
         .await
         .map_err(|e| ScraperError::Upload(format!("Request: {e}")))?;
