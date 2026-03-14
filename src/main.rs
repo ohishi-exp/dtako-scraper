@@ -1,5 +1,6 @@
 mod config;
 mod error;
+mod notify;
 mod scraper;
 
 use std::sync::Arc;
@@ -104,6 +105,22 @@ async fn scrape_handler(
                 message: e.to_string(),
             },
         });
+    }
+
+    // メール通知
+    if let Some(ref mail_config) = state.config.mail {
+        let has_error = results.iter().any(|r| r.status == "error");
+        let subject = if has_error {
+            format!("[dtako-scraper] ⚠ エラーあり ({} ~ {})", start_date, end_date)
+        } else {
+            format!("[dtako-scraper] ✅ 成功 ({} ~ {})", start_date, end_date)
+        };
+        let body = results
+            .iter()
+            .map(|r| format!("[{}] {} - {}", r.status, r.comp_id, r.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        notify::send_result_mail(mail_config, &subject, &body).await;
     }
 
     Ok(Json(ScrapeResponse { results }))

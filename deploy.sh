@@ -20,6 +20,9 @@ cat > "$ENV_FILE" <<ENVEOF
 DTAKO_ACCOUNTS: '${DTAKO_ACCOUNTS}'
 DAIUN_SALARY_URL: '${DAIUN_SALARY_URL}'
 DOWNLOAD_DIR: /app/downloads
+SMTP_USER: '${SMTP_USER}'
+SMTP_PASS: '${SMTP_PASS}'
+MAIL_TO: '${MAIL_TO}'
 ENVEOF
 
 echo "==> Deploying to Cloud Run..."

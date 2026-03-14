@@ -21,6 +21,15 @@ pub struct AppConfig {
     pub download_dir: String,
     /// サーバーポート
     pub port: u16,
+    /// メール通知設定（環境変数未設定なら None）
+    pub mail: Option<MailConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MailConfig {
+    pub smtp_user: String,
+    pub smtp_pass: String,
+    pub to: String,
 }
 
 impl AppConfig {
@@ -39,11 +48,23 @@ impl AppConfig {
             .parse()
             .unwrap_or(8080);
 
+        let mail = match (
+            std::env::var("SMTP_USER"),
+            std::env::var("SMTP_PASS"),
+        ) {
+            (Ok(smtp_user), Ok(smtp_pass)) => {
+                let to = std::env::var("MAIL_TO").unwrap_or_else(|_| smtp_user.clone());
+                Some(MailConfig { smtp_user, smtp_pass, to })
+            }
+            _ => None,
+        };
+
         Self {
             accounts,
             daiun_salary_url,
             download_dir,
             port,
+            mail,
         }
     }
 }
