@@ -1,5 +1,5 @@
 # Stage 1: Build Rust binary
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1.88-slim-bookworm AS builder
 
 ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
