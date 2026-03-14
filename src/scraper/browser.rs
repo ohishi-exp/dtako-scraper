@@ -32,16 +32,30 @@ impl BrowserSession {
             .or_else(|_| std::env::var("CHROMIUM_PATH"))
             .unwrap_or_else(|_| "chromium".to_string());
 
+        // ユニークなユーザーデータディレクトリを生成
+        let unique_id = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let user_data_dir = std::env::temp_dir().join(format!("dtako-browser-{}", unique_id));
+
         let builder = BrowserConfig::builder()
             .chrome_executable(chrome_path)
+            .user_data_dir(&user_data_dir)
             .no_sandbox()
             .request_timeout(Duration::from_secs(60))
             .window_size(1280, 800)
+            .arg("--headless=new")
             .arg("--disable-blink-features=AutomationControlled")
             .arg("--disable-dev-shm-usage")
             .arg("--disable-gpu")
             .arg("--disable-web-security")
-            .arg("--allow-running-insecure-content");
+            .arg("--allow-running-insecure-content")
+            .arg("--disable-features=VizDisplayCompositor");
 
         let config = builder
             .build()

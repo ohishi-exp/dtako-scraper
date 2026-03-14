@@ -15,6 +15,7 @@ pub async fn scrape(
     end_date: &str,
     download_dir: &str,
     daiun_salary_url: &str,
+    skip_upload: bool,
 ) -> Result<String, ScraperError> {
     info!(
         "Starting scrape: comp_id={}, dates={} to {}",
@@ -36,11 +37,16 @@ pub async fn scrape(
         download::download_csv(&session.page, session.download_dir(), start_date, end_date)
             .await?;
 
-    // daiun-salary にアップロード
-    let result = upload::upload_zip(daiun_salary_url, &account.tenant_id, &zip_path).await?;
-
-    // クリーンアップ
-    let _ = std::fs::remove_dir_all(&account_dir);
+    let result = if skip_upload {
+        info!("skip_upload=true, skipping upload. ZIP at: {}", zip_path.display());
+        format!("Download only. ZIP: {}", zip_path.display())
+    } else {
+        // daiun-salary にアップロード
+        let uploaded = upload::upload_zip(daiun_salary_url, &account.tenant_id, &zip_path).await?;
+        // クリーンアップ
+        let _ = std::fs::remove_dir_all(&account_dir);
+        uploaded
+    };
 
     // ブラウザを閉じる
     if let Err(e) = session.page.close().await {

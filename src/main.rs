@@ -21,6 +21,9 @@ struct ScrapeRequest {
     end_date: String,   // "YYYY-MM-DD"
     /// 特定の企業CDのみ実行（省略時は全企業）
     comp_id: Option<String>,
+    /// アップロードをスキップ（テスト用）
+    #[serde(default)]
+    skip_upload: bool,
 }
 
 #[derive(Serialize)]
@@ -76,6 +79,7 @@ async fn scrape_handler(
             &req.end_date,
             &state.config.download_dir,
             &state.config.daiun_salary_url,
+            req.skip_upload,
         )
         .await;
 
