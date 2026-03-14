@@ -3,14 +3,25 @@ mod error;
 mod notify;
 mod scraper;
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, routing::{get, post}, Json, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::sse::{Event, KeepAlive, Sse},
+    routing::{get, post},
+    Json, Router,
+};
 use chrono::Local;
+use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 use config::AppConfig;
+use scraper::ProgressEvent;
 
 #[derive(Clone)]
 struct AppState {
@@ -28,11 +39,6 @@ struct ScrapeRequest {
     /// アップロードをスキップ（テスト用）
     #[serde(default)]
     skip_upload: bool,
-}
-
-#[derive(Serialize)]
-struct ScrapeResponse {
-    results: Vec<ScrapeResult>,
 }
 
 #[derive(Serialize)]
@@ -58,72 +64,117 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 async fn scrape_handler(
     State(state): State<AppState>,
     Json(req): Json<ScrapeRequest>,
-) -> Result<Json<ScrapeResponse>, (StatusCode, String)> {
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let accounts: Vec<_> = if let Some(ref comp_id) = req.comp_id {
         state
             .config
             .accounts
             .iter()
             .filter(|a| a.comp_id == *comp_id)
+            .cloned()
             .collect()
     } else {
-        state.config.accounts.iter().collect()
+        state.config.accounts.clone()
     };
 
     if accounts.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "No matching accounts".into()));
     }
 
-    let mut results = Vec::new();
-
     let yesterday = (Local::now() - chrono::Duration::days(1))
         .format("%Y-%m-%d")
         .to_string();
-    let start_date = req.start_date.as_deref().unwrap_or(&yesterday);
-    let end_date = req.end_date.as_deref().unwrap_or(&yesterday);
+    let start_date = req.start_date.unwrap_or_else(|| yesterday.clone());
+    let end_date = req.end_date.unwrap_or(yesterday);
+    let skip_upload = req.skip_upload;
+    let config = state.config.clone();
 
-    for account in accounts {
-        let result = scraper::scrape(
-            account,
-            start_date,
-            end_date,
-            &state.config.download_dir,
-            &state.config.daiun_salary_url,
-            req.skip_upload,
-        )
-        .await;
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
 
-        results.push(match result {
-            Ok(msg) => ScrapeResult {
-                comp_id: account.comp_id.clone(),
-                status: "success".into(),
-                message: msg,
-            },
-            Err(e) => ScrapeResult {
-                comp_id: account.comp_id.clone(),
-                status: "error".into(),
-                message: e.to_string(),
-            },
+    tokio::spawn(async move {
+        let (progress_tx, mut progress_rx) = mpsc::channel::<ProgressEvent>(32);
+
+        // 進捗イベントを SSE に変換して送信するタスク
+        let tx_clone = tx.clone();
+        let progress_forwarder = tokio::spawn(async move {
+            while let Some(evt) = progress_rx.recv().await {
+                if let Ok(json) = serde_json::to_string(&evt) {
+                    let _ = tx_clone.send(Ok(Event::default().data(json))).await;
+                }
+            }
         });
-    }
 
-    // メール通知
-    if let Some(ref mail_config) = state.config.mail {
-        let has_error = results.iter().any(|r| r.status == "error");
-        let subject = if has_error {
-            format!("[dtako-scraper] ⚠ エラーあり ({} ~ {})", start_date, end_date)
-        } else {
-            format!("[dtako-scraper] ✅ 成功 ({} ~ {})", start_date, end_date)
-        };
-        let body = results
-            .iter()
-            .map(|r| format!("[{}] {} - {}", r.status, r.comp_id, r.message))
-            .collect::<Vec<_>>()
-            .join("\n");
-        notify::send_result_mail(mail_config, &subject, &body).await;
-    }
+        let mut results = Vec::new();
 
-    Ok(Json(ScrapeResponse { results }))
+        for account in &accounts {
+            let result = scraper::scrape(
+                account,
+                &start_date,
+                &end_date,
+                &config.download_dir,
+                &config.daiun_salary_url,
+                skip_upload,
+                Some(&progress_tx),
+            )
+            .await;
+
+            let scrape_result = match result {
+                Ok(msg) => ScrapeResult {
+                    comp_id: account.comp_id.clone(),
+                    status: "success".into(),
+                    message: msg,
+                },
+                Err(e) => ScrapeResult {
+                    comp_id: account.comp_id.clone(),
+                    status: "error".into(),
+                    message: e.to_string(),
+                },
+            };
+
+            // 企業ごとの結果イベント
+            if let Ok(json) = serde_json::to_string(&ProgressEvent {
+                event: "result".into(),
+                comp_id: scrape_result.comp_id.clone(),
+                step: "done".into(),
+                status: Some(scrape_result.status.clone()),
+                message: Some(scrape_result.message.clone()),
+            }) {
+                let _ = tx.send(Ok(Event::default().data(json))).await;
+            }
+
+            results.push(scrape_result);
+        }
+
+        // メール通知
+        if let Some(ref mail_config) = config.mail {
+            let has_error = results.iter().any(|r| r.status == "error");
+            let subject = if has_error {
+                format!("[dtako-scraper] ⚠ エラーあり ({} ~ {})", start_date, end_date)
+            } else {
+                format!("[dtako-scraper] ✅ 成功 ({} ~ {})", start_date, end_date)
+            };
+            let body = results
+                .iter()
+                .map(|r| format!("[{}] {} - {}", r.status, r.comp_id, r.message))
+                .collect::<Vec<_>>()
+                .join("\n");
+            notify::send_result_mail(mail_config, &subject, &body).await;
+        }
+
+        // progress チャネルを閉じて forwarder を終了
+        drop(progress_tx);
+        let _ = progress_forwarder.await;
+
+        // 完了イベント
+        let _ = tx
+            .send(Ok(Event::default().data(
+                serde_json::json!({"event": "done"}).to_string(),
+            )))
+            .await;
+    });
+
+    let stream = ReceiverStream::new(rx);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 #[tokio::main]

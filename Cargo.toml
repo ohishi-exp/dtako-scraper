@@ -14,6 +14,7 @@ axum = "0.8"
 # Browser automation (CDP)
 chromiumoxide = { version = "0.8", default-features = false, features = ["tokio-runtime", "_fetcher-native-tokio"] }
 futures = "0.3"
+tokio-stream = "0.1"
 
 # HTTP client (file upload)
 reqwest = { version = "0.12", features = ["json", "multipart"] }
