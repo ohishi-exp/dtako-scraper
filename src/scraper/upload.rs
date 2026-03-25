@@ -1,11 +1,10 @@
 use std::path::PathBuf;
 
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::error::ScraperError;
 
-/// daiun-salary の /internal/upload に ZIP ファイルを送信
-/// 失敗時は /internal/store で R2 に退避
+/// rust-alc-api の /api/upload に ZIP ファイルを送信
 pub async fn upload_zip(
     daiun_salary_url: &str,
     tenant_id: &str,
@@ -20,34 +19,17 @@ pub async fn upload_zip(
         .to_string_lossy()
         .to_string();
 
-    // 1. まず /internal/upload を試行
-    let url = format!("{}/internal/upload", daiun_salary_url);
+    let url = format!("{}/api/upload", daiun_salary_url);
     info!("Uploading {:?} to {} (tenant={})", zip_path, url, tenant_id);
 
     match send_multipart(&url, tenant_id, &filename, &file_bytes).await {
         Ok(body) => {
             info!("Upload successful: {}", body);
-            return Ok(body);
+            Ok(body)
         }
         Err(e) => {
-            warn!("Upload failed: {e}, attempting fallback store to R2...");
-        }
-    }
-
-    // 2. フォールバック: /internal/store で R2 に退避
-    let store_url = format!("{}/internal/store", daiun_salary_url);
-    info!("Storing ZIP to R2 via {} (tenant={})", store_url, tenant_id);
-
-    match send_multipart(&store_url, tenant_id, &filename, &file_bytes).await {
-        Ok(body) => {
-            warn!("ZIP stored for later rerun: {}", body);
-            Ok(format!("STORED_FOR_RETRY: {}", body))
-        }
-        Err(e) => {
-            error!("Both upload and store failed: {e}");
-            Err(ScraperError::Upload(format!(
-                "Upload and fallback store both failed: {e}"
-            )))
+            error!("Upload failed: {e}");
+            Err(ScraperError::Upload(format!("Upload failed: {e}")))
         }
     }
 }
@@ -70,6 +52,7 @@ async fn send_multipart(
     let client = reqwest::Client::new();
     let resp = client
         .post(url)
+        .header("X-Tenant-ID", tenant_id)
         .multipart(form)
         .timeout(std::time::Duration::from_secs(180))
         .send()
