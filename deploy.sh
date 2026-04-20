@@ -6,13 +6,16 @@ set -a
 source .env
 set +a
 
-IMAGE=asia-northeast1-docker.pkg.dev/cloudsql-sv/daiun-salary/dtako-scraper:latest
+# GHCR に push、Cloud Run は AR remote-repo (daiun-salary) 経由で pull
+# GHCR 認証は ~/.docker/config.json (事前に `docker login ghcr.io` 済みであること)
+IMAGE_PUSH="ghcr.io/ohishi-exp/dtako-scraper:latest"
+IMAGE_CLOUDRUN="asia-northeast1-docker.pkg.dev/cloudsql-sv/daiun-salary/ohishi-exp/dtako-scraper:latest"
 
 echo "==> Building Docker image..."
-docker build --build-arg CARGO_BUILD_JOBS=2 -t "$IMAGE" .
+docker build --build-arg CARGO_BUILD_JOBS=2 -t "$IMAGE_PUSH" .
 
-echo "==> Pushing to Artifact Registry..."
-docker push "$IMAGE"
+echo "==> Pushing to GHCR..."
+docker push "$IMAGE_PUSH"
 
 echo "==> Generating env-vars file..."
 ENV_FILE=$(mktemp /tmp/env-vars-XXXXXX.yaml)
@@ -27,7 +30,7 @@ ENVEOF
 
 echo "==> Deploying to Cloud Run..."
 gcloud run deploy dtako-scraper \
-  --image "$IMAGE" \
+  --image "$IMAGE_CLOUDRUN" \
   --region asia-northeast1 \
   --platform managed \
   --no-allow-unauthenticated \
