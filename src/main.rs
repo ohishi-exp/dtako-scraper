@@ -13,7 +13,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Local;
+use chrono::{FixedOffset, Utc};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -33,7 +33,7 @@ struct ScrapeRequest {
     /// 省略時は前日
     start_date: Option<String>, // "YYYY-MM-DD"
     /// 省略時は前日
-    end_date: Option<String>,   // "YYYY-MM-DD"
+    end_date: Option<String>, // "YYYY-MM-DD"
     /// 特定の企業CDのみ実行（省略時は全企業）
     comp_id: Option<String>,
     /// アップロードをスキップ（テスト用）
@@ -81,7 +81,8 @@ async fn scrape_handler(
         return Err((StatusCode::BAD_REQUEST, "No matching accounts".into()));
     }
 
-    let yesterday = (Local::now() - chrono::Duration::days(1))
+    let jst = FixedOffset::east_opt(9 * 3600).unwrap();
+    let yesterday = (Utc::now().with_timezone(&jst) - chrono::Duration::days(1))
         .format("%Y-%m-%d")
         .to_string();
     let start_date = req.start_date.unwrap_or_else(|| yesterday.clone());
@@ -149,7 +150,10 @@ async fn scrape_handler(
         if let Some(ref mail_config) = config.mail {
             let has_error = results.iter().any(|r| r.status == "error");
             let subject = if has_error {
-                format!("[dtako-scraper] ⚠ エラーあり ({} ~ {})", start_date, end_date)
+                format!(
+                    "[dtako-scraper] ⚠ エラーあり ({} ~ {})",
+                    start_date, end_date
+                )
             } else {
                 format!("[dtako-scraper] ✅ 成功 ({} ~ {})", start_date, end_date)
             };
@@ -167,9 +171,9 @@ async fn scrape_handler(
 
         // 完了イベント
         let _ = tx
-            .send(Ok(Event::default().data(
-                serde_json::json!({"event": "done"}).to_string(),
-            )))
+            .send(Ok(
+                Event::default().data(serde_json::json!({"event": "done"}).to_string())
+            ))
             .await;
     });
 
