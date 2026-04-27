@@ -3,6 +3,7 @@ mod error;
 mod notify;
 mod scraper;
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -16,16 +17,27 @@ use axum::{
 use chrono::{FixedOffset, Utc};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::info;
+use tracing::{info, warn};
 
 use config::AppConfig;
 use scraper::ProgressEvent;
 
+/// comp_id 別の排他ロック (同一企業への並列 scrape を直列化し、source 側のセッション衝突を防ぐ)
+type CompLocks = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
+
 #[derive(Clone)]
 struct AppState {
     config: Arc<AppConfig>,
+    comp_locks: CompLocks,
+}
+
+async fn comp_lock(locks: &CompLocks, comp_id: &str) -> Arc<Mutex<()>> {
+    let mut map = locks.lock().await;
+    map.entry(comp_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 #[derive(Deserialize)]
@@ -89,6 +101,7 @@ async fn scrape_handler(
     let end_date = req.end_date.unwrap_or(yesterday);
     let skip_upload = req.skip_upload;
     let config = state.config.clone();
+    let comp_locks = state.comp_locks.clone();
 
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
 
@@ -108,6 +121,20 @@ async fn scrape_handler(
         let mut results = Vec::new();
 
         for account in &accounts {
+            // 同一 comp_id の並列 scrape を直列化（source 側 session / ダウンロードディレクトリ race の予防）
+            let lock = comp_lock(&comp_locks, &account.comp_id).await;
+            let acquire = lock.try_lock();
+            let _guard = match acquire {
+                Ok(g) => g,
+                Err(_) => {
+                    warn!(
+                        "comp_id={} is currently scraping in another call; waiting for lock...",
+                        account.comp_id
+                    );
+                    lock.lock().await
+                }
+            };
+
             let result = scraper::scrape(
                 account,
                 &start_date,
@@ -205,6 +232,7 @@ async fn main() {
 
     let state = AppState {
         config: Arc::new(config),
+        comp_locks: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()

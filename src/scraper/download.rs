@@ -117,6 +117,31 @@ pub async fn download_csv(
 
     sleep(Duration::from_millis(500)).await;
 
+    // 入力後の実際の値をフィールドから読み戻す（typing が ASP.NET postback で書き換えられていないか確認）
+    let actual_values = page
+        .evaluate(
+            r#"(function() {
+        var ids = [
+            'MainContent_ucStartDate_txtYear',
+            'MainContent_ucStartDate_txtMonth',
+            'MainContent_ucStartDate_txtDay',
+            'MainContent_ucEndDate_txtYear',
+            'MainContent_ucEndDate_txtMonth',
+            'MainContent_ucEndDate_txtDay'
+        ];
+        return JSON.stringify(ids.map(function(id){
+            var el = document.getElementById(id);
+            return id + '=' + (el ? el.value : 'NOT_FOUND');
+        }));
+    })()"#,
+        )
+        .await
+        .map_err(|e| ScraperError::JavaScript(format!("readback failed: {e}")))?;
+    info!(
+        "Actual date field values after typing: {:?}",
+        actual_values.into_value::<String>()
+    );
+
     // CSVダウンロードボタンクリック
     info!("Clicking btnCsv...");
     let csv_result = page
