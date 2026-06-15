@@ -82,6 +82,12 @@ jobs:
     name: Build + push image
     needs: test
     runs-on: ubuntu-latest
+    # PR トリガーでも GHCR push できるよう明示的に再宣言
+    # (org 設定 / repo の Default workflow permissions が Read-only でも
+    # job-level の packages: write は workflow YAML で許可される)。
+    permissions:
+      contents: read
+      packages: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
