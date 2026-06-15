@@ -59,10 +59,20 @@ jobs:
   test:
     name: Cargo test
     runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      # rust-alc-api ci.yml と同パターンの sccache 配線
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dtako-scraper-test
+          # cache 汚染防止: PR では既存 main cache を読むだけ、書き戻すのは main push 時のみ
+          save-if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo test
