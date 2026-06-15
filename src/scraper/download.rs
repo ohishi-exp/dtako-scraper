@@ -245,7 +245,7 @@ fn parse_date_parts(
     Ok((yy, parts[1].to_string(), parts[2].to_string()))
 }
 
-fn get_existing_files(dir: &PathBuf) -> HashSet<PathBuf> {
+pub(crate) fn get_existing_files(dir: &PathBuf) -> HashSet<PathBuf> {
     if !dir.exists() {
         return HashSet::new();
     }
@@ -255,7 +255,7 @@ fn get_existing_files(dir: &PathBuf) -> HashSet<PathBuf> {
         .unwrap_or_default()
 }
 
-async fn wait_for_download(
+pub(crate) async fn wait_for_download(
     download_dir: &PathBuf,
     existing_files: &HashSet<PathBuf>,
 ) -> Result<PathBuf, ScraperError> {

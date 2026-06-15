@@ -2,6 +2,8 @@ pub mod browser;
 pub mod download;
 pub mod login;
 pub mod upload;
+pub mod vehicle_match;
+pub mod vehicle_setting;
 
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -102,6 +104,60 @@ pub async fn scrape(
 
     info!("Scrape completed for comp_id={}", comp_id);
     Ok(result)
+}
+
+/// F-VOS3020 から 1 車輌 1 運行の設定 ZIP を取得する (email-receiver 用)。
+///
+/// `/scrape` (日次 CSV 一括) とは別経路。login → F-VOS3020 → 該当運行選択 → DL。
+/// upload はせず、呼び出し側 (email-receiver) が base64 を受けて R2 に保管する。
+pub async fn scrape_vehicle_setting(
+    account: &Account,
+    vehicle_name: &str,
+    received_at: &str,
+    download_dir: &str,
+) -> Result<vehicle_setting::VehicleSettingResult, ScraperError> {
+    info!(
+        "Starting vehicle-setting scrape: comp_id={}, vehicle='{}', received_at='{}'",
+        account.comp_id, vehicle_name, received_at
+    );
+
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let account_dir = format!("{}/{}-vset-{}", download_dir, account.comp_id, unique);
+
+    let session = browser::BrowserSession::new(&account_dir).await?;
+
+    login::login(&session.page, account).await?;
+
+    let result = vehicle_setting::download_vehicle_setting(
+        &session.page,
+        session.download_dir(),
+        vehicle_name,
+        received_at,
+    )
+    .await;
+
+    if let Err(e) = session.page.close().await {
+        error!("Failed to close page: {}", e);
+    }
+
+    match &result {
+        Ok(r) => info!(
+            "Vehicle-setting scrape done: comp_id={} unko_no={} zip={:?}",
+            account.comp_id, r.unko_no, r.zip_path
+        ),
+        Err(e) => error!(
+            "Vehicle-setting scrape failed: comp_id={} err={}",
+            account.comp_id, e
+        ),
+    }
+    result
 }
 
 async fn send_progress(tx: Option<&mpsc::Sender<ProgressEvent>>, comp_id: &str, step: &str) {

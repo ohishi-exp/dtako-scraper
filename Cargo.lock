@@ -453,6 +453,7 @@ name = "dtako-scraper"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "chromiumoxide",
  "chrono",
  "dotenvy",
