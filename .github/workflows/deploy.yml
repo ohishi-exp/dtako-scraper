@@ -1,0 +1,166 @@
+name: Deploy
+
+# tag push (`dev-*` 自動採番 / `v*` 手動 stable) または手動 dispatch で発火し、
+# GHCR に image を push → SSH で自前 VPS の docker container を入れ替える。
+#
+# 参考: yhonda-ohishi-pub-dev/browser-render-rust の scripts/deploy-kagoya.sh。
+# 機密 (DTAKO_ACCOUNTS / SMTP_*) は VPS 上の /opt/dtako-scraper/.env に置いたまま
+# --env-file で渡り、CI / workflow YAML には一切載らない。
+
+on:
+  push:
+    tags:
+      - 'dev-*'
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to build + deploy (e.g. dev-0.0.5, v0.1.0)'
+        required: true
+        type: string
+
+env:
+  GHCR_IMAGE: ghcr.io/ohishi-exp/dtako-scraper
+  CONTAINER_NAME: dtako-scraper
+  VPS_APP_DIR: /opt/dtako-scraper
+
+jobs:
+  build:
+    name: Build + push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine tag
+        id: tag
+        env:
+          PUSH_REF: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ]; then
+            TAG="$PUSH_REF"
+          else
+            TAG="$INPUT_TAG"
+          fi
+          # tag は dev-N.N.N または vN.N.N (英数字 + . + -) のみ許可
+          if ! printf '%s' "$TAG" | grep -qE '^(dev-|v)[0-9A-Za-z.+-]+$'; then
+            echo "::error::invalid tag format: $TAG (expected dev-X.Y.Z or vX.Y.Z)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "### Build tag: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            CARGO_BUILD_JOBS=2
+          tags: |
+            ${{ env.GHCR_IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.GHCR_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: SSH deploy to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add VPS host key
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # DEPLOY_HOST は "user@host" 形式想定。host 部分だけ取り出して known_hosts に登録
+          HOST="${DEPLOY_HOST##*@}"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy container on VPS
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          IMAGE: ${{ env.GHCR_IMAGE }}:${{ needs.build.outputs.tag }}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+          APP_DIR: ${{ env.VPS_APP_DIR }}
+        run: |
+          # NOTE: 値は env: 経由で渡し、SSH コマンドブロックには直接 ${{ }} を埋め込まない
+          # (command injection 防止)。
+          ssh -o StrictHostKeyChecking=yes "$DEPLOY_HOST" \
+              IMAGE="$IMAGE" \
+              CONTAINER_NAME="$CONTAINER_NAME" \
+              APP_DIR="$APP_DIR" \
+              'bash -s' <<'REMOTE'
+          set -e
+
+          : "${IMAGE:?IMAGE required}"
+          : "${CONTAINER_NAME:?CONTAINER_NAME required}"
+          : "${APP_DIR:?APP_DIR required}"
+
+          # VPS 側 .env から GHCR pull token を取り出して docker login (token を画面に出さない)
+          if [ -f "$APP_DIR/.env" ]; then
+            GHCR_TOKEN=$(grep -E '^GHCR_TOKEN=' "$APP_DIR/.env" | cut -d= -f2-)
+            if [ -n "$GHCR_TOKEN" ]; then
+              echo "$GHCR_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin >/dev/null
+            else
+              echo "GHCR_TOKEN missing in $APP_DIR/.env; assuming docker is already logged in to GHCR"
+            fi
+          fi
+
+          echo "Pulling $IMAGE ..."
+          docker pull "$IMAGE"
+
+          echo "Stopping existing container..."
+          docker stop "$CONTAINER_NAME" 2>/dev/null || true
+          docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+          echo "Starting new container..."
+          mkdir -p "$APP_DIR/downloads"
+          docker run -d \
+              --name "$CONTAINER_NAME" \
+              --restart=unless-stopped \
+              --init \
+              -p 127.0.0.1:8080:8080 \
+              -v "$APP_DIR/downloads:/app/downloads" \
+              --env-file "$APP_DIR/.env" \
+              --shm-size=1g \
+              --ulimit nofile=65536:65536 \
+              --security-opt seccomp=unconfined \
+              "$IMAGE"
+
+          echo "Waiting for health check..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "Health check passed!"
+              docker ps -f name="$CONTAINER_NAME"
+              echo "Cleaning up old images..."
+              docker image prune -af --filter 'until=24h' || true
+              exit 0
+            fi
+            echo "Waiting... ($i/15)"
+            sleep 2
+          done
+
+          echo "::error::Health check failed for $CONTAINER_NAME"
+          docker logs --tail=200 "$CONTAINER_NAME" || true
+          exit 1
+          REMOTE

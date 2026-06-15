@@ -70,7 +70,8 @@ pub async fn login(page: &Page, account: &Account) -> Result<(), ScraperError> {
         account.comp_id, account.user_name, account.user_pass
     );
 
-    let fill_result = page.evaluate(fill_script.as_str())
+    let fill_result = page
+        .evaluate(fill_script.as_str())
         .await
         .map_err(|e| ScraperError::JavaScript(e.to_string()))?;
     info!("Fill result: {:?}", fill_result.into_value::<String>());
@@ -91,7 +92,8 @@ pub async fn login(page: &Page, account: &Account) -> Result<(), ScraperError> {
         }
     })()"#;
 
-    let click_result = page.evaluate(click_script)
+    let click_result = page
+        .evaluate(click_script)
         .await
         .map_err(|e| ScraperError::JavaScript(e.to_string()))?;
     info!("Click result: {:?}", click_result.into_value::<String>());
@@ -115,10 +117,21 @@ pub async fn login(page: &Page, account: &Account) -> Result<(), ScraperError> {
     for i in 0..10 {
         // デバッグ: ページのタイトルとボタン要素を確認
         if let Ok(title) = page.evaluate("document.title").await {
-            debug!("Login check attempt {}: title={:?}", i + 1, title.into_value::<String>());
+            debug!(
+                "Login check attempt {}: title={:?}",
+                i + 1,
+                title.into_value::<String>()
+            );
         }
-        if let Ok(body_snippet) = page.evaluate("document.body ? document.body.innerHTML.substring(0, 500) : 'no body'").await {
-            debug!("Login check attempt {}: body={:?}", i + 1, body_snippet.into_value::<String>());
+        if let Ok(body_snippet) = page
+            .evaluate("document.body ? document.body.innerHTML.substring(0, 500) : 'no body'")
+            .await
+        {
+            debug!(
+                "Login check attempt {}: body={:?}",
+                i + 1,
+                body_snippet.into_value::<String>()
+            );
         }
 
         match page
