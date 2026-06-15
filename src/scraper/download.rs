@@ -41,7 +41,14 @@ pub async fn download_csv(
 
     // テーブルの1行目から和暦/西暦を判定
     let is_wareki = detect_wareki(page).await;
-    info!("Date format: {}", if is_wareki { "和暦(令和)" } else { "西暦" });
+    info!(
+        "Date format: {}",
+        if is_wareki {
+            "和暦(令和)"
+        } else {
+            "西暦"
+        }
+    );
 
     // 日付パース
     let (sy, sm, sd) = parse_date_parts(start_date, is_wareki)?;
@@ -218,10 +225,7 @@ async fn detect_wareki(page: &Page) -> bool {
 
 /// "YYYY-MM-DD" → (年2桁, 月2桁, 日2桁) にパース
 /// is_wareki=true の場合、西暦→令和に変換 (2026 → 08)
-fn parse_date_parts(
-    date: &str,
-    is_wareki: bool,
-) -> Result<(String, String, String), ScraperError> {
+fn parse_date_parts(date: &str, is_wareki: bool) -> Result<(String, String, String), ScraperError> {
     let parts: Vec<&str> = date.split('-').collect();
     if parts.len() != 3 {
         return Err(ScraperError::Download(format!(

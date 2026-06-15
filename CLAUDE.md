@@ -18,7 +18,10 @@ Dtakolog CSV スクレイパー。theearth-np.com から csvdata.zip を自動�
 cargo build              # ビルド
 cargo run                # サーバー起動 (要 .env)
 docker build -t dtako-scraper .  # Docker イメージビルド
-./deploy.sh              # Cloud Run デプロイ
+
+# Deploy: 通常は不要 (PR を main に merge すると CI が自動 deploy)。
+# 緊急時の手動 deploy fallback (要: 手元 docker + VPS への SSH 鍵):
+KAGOYA_VPS_HOST="ubuntu@<vps-ip>" ./scripts/deploy.sh
 ```
 
 ## API
@@ -65,23 +68,67 @@ docker build -t dtako-scraper .  # Docker イメージビルド
 - `Actual date field values after typing` (西暦/和暦判定の検証用)
 - `ZIP contents for comp_id=...` (KUDGIVT 欠落調査用)
 
-今後 KUDGIVT.csv not found 系の症状が出たら Cloud Run logs で `ZIP contents` を確認。
-daiun-salary は dtako-scraper の SSE プロキシなので、daiun-salary 単体に対策入れても意味なし。
+今後 KUDGIVT.csv not found 系の症状が出たら **VPS の `docker logs dtako-scraper`** で
+`ZIP contents` を確認。daiun-salary は dtako-scraper の SSE プロキシなので、
+daiun-salary 単体に対策入れても意味なし。
 
 事例: 2026-04-27 手動 `/scrape` 検証中に「KUDGIVT.csv not found in ZIP」エラー
 (`feedback_dtako_scraper_concurrency`)。
 
-### デプロイは **手動 ./deploy.sh** (CI 自動 deploy 無し)
+### Deploy: CI 自動化済み (PR + dev タグ運用)
 
-このリポジトリは **GitHub Actions の自動デプロイが無い**。`./deploy.sh` (GHCR push +
-Cloud Run deploy) を手動で叩かないと本番が更新されない。
+deploy 先は **自前 VPS (docker / SSH)** — `browser-render-rust` と同じ Kagoya VPS の
+docker container として動作する。Cloud Run ではない (旧 `deploy.sh` の
+`gcloud run deploy` は実態と乖離していたため削除済み、2026-06-15)。
 
-- main に merge / push しても本番に届かない → user に "deploy しますか？" を AskUserQuestion で確認してから `./deploy.sh`
-- `deploy.sh` は GHCR (`ghcr.io/ohishi-exp/dtako-scraper:latest`) に push →
-  Cloud Run が AR remote-repo (`asia-northeast1-docker.pkg.dev/cloudsql-sv/daiun-salary/`) 経由で pull
-- Cron `dtako-scraper-daily` (asia-northeast1, `0 1 * * *` Asia/Tokyo) が日次起動の本番 path
-- 本来は `.github/workflows/deploy.yml` を追加すべき (TODO)
+#### 自動 deploy フロー (通常運用)
 
-`feedback_no_direct_deploy` の「デプロイは PR 経由」ルールは CI auto-deploy 前提の repo 向け
-であり、ここは例外。2026-04-24 PR #2 で JST 修正が merge されていたが deploy 漏れで
-3 日間バグが残ったまま稼働していた前例あり (`feedback_dtako_scraper_manual_deploy`)。
+```
+1. PR を main に向ける
+   └ .github/workflows/test.yml (PR トリガー) → cargo fmt/test + docker build sanity check
+
+2. PR を merge (= main push)
+   └ .github/workflows/dev-release.yml (push main) → ci-workflows/tag-release.yml で
+      `dev-{patch}` tag を自動採番 + push (mcp-cf-workers と同パターン、
+      `TAG_RELEASE_PAT` actor で push しないと次の workflow が発火しない仕様)
+
+3. tag push を検知
+   └ .github/workflows/deploy.yml (push tag dev-*) → docker build →
+      GHCR push (ghcr.io/ohishi-exp/dtako-scraper:{tag} + :latest) →
+      SSH で VPS に docker pull && container 入れ替え && health check (30s) &&
+      docker image prune
+```
+
+stable リリースは `v*` tag を手動で push (= 同じ deploy.yml が拾う)。
+緊急時は `gh workflow run deploy.yml -f tag=dev-X.Y.Z` または `./scripts/deploy.sh`。
+
+#### 機密の扱い
+
+**`DTAKO_ACCOUNTS` / `SMTP_*` / `GHCR_TOKEN` は VPS の `/opt/dtako-scraper/.env` に
+置いたまま `--env-file` で渡る = GitHub Actions / workflow YAML には一切載らない**。
+鍵 rotate は VPS の `.env` を直接編集 + container 再起動。
+
+#### 必要な GitHub org / repo secrets
+
+`KAGOYA_VPS_*` は同 Kagoya VPS に deploy する他 repo (browser-render-rust 等)
+とも共有する想定で、ohishi-exp **org level secret** に格納し `secrets: inherit`
+で読む (= GCP Secret Manager の SoT もこの名前で 1 つ)。
+
+| 名前 | scope | 値 |
+|---|---|---|
+| `KAGOYA_VPS_SSH_KEY` | org | Kagoya VPS 用 SSH 秘密鍵 |
+| `KAGOYA_VPS_HOST` | org | `ubuntu@<IP>` (browser-render と同 VPS) |
+| `TAG_RELEASE_PAT` | repo or org | dev-release.yml が tag push → deploy.yml 連鎖発火に必要 |
+| `CI_APP_ID` / `CI_APP_PRIVATE_KEY` | org (既存) | auto-merge job (ci-workflows/auto-merge.yml) が App token で merge するため |
+
+#### VPS 側の前提 (一度だけ準備)
+
+- `/opt/dtako-scraper/.env` (既存 `.env` 相当 + `GHCR_TOKEN=<read:packages PAT>`)
+- `/opt/dtako-scraper/downloads/`
+- docker インストール済み、CI runner の SSH 公開鍵を `authorized_keys` に登録
+- cron `dtako-scraper-daily` (`0 1 * * *` Asia/Tokyo) が VPS 上で container を叩く形 →
+  **tag deploy は cron 時刻 (深夜 01:00 JST) を避けて push** する (container 再起動で
+  scrape が中断するため)
+
+参考: 同じ作者の `yhonda-ohishi-pub-dev/browser-render-rust` `scripts/deploy-kagoya.sh`
+が deploy.yml の deploy job ロジックの参照元。

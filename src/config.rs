@@ -48,13 +48,14 @@ impl AppConfig {
             .parse()
             .unwrap_or(8080);
 
-        let mail = match (
-            std::env::var("SMTP_USER"),
-            std::env::var("SMTP_PASS"),
-        ) {
+        let mail = match (std::env::var("SMTP_USER"), std::env::var("SMTP_PASS")) {
             (Ok(smtp_user), Ok(smtp_pass)) => {
                 let to = std::env::var("MAIL_TO").unwrap_or_else(|_| smtp_user.clone());
-                Some(MailConfig { smtp_user, smtp_pass, to })
+                Some(MailConfig {
+                    smtp_user,
+                    smtp_pass,
+                    to,
+                })
             }
             _ => None,
         };

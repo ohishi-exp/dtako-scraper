@@ -1,0 +1,43 @@
+name: Dev Release
+
+# main に push されたら `dev-{patch}` tag を自動採番して push する。
+# その tag push を deploy.yml が検知して VPS へ deploy する。
+#
+# 流れ (mcp-cf-workers の dev-release.yml と同パターン):
+#   1. PR を main に merge
+#   2. 本 workflow: ci-workflows/tag-release.yml@main (Mode A) が直近 `dev-*`
+#      を見て patch+1 した `dev-X.Y.Z` tag を push (prerelease)
+#   3. deploy.yml が `push: tags: ['dev-*']` で検知 → build + GHCR push +
+#      SSH で VPS deploy
+#
+# なぜ `TAG_RELEASE_PAT` が要るか:
+#   GITHUB_TOKEN で push した tag は別 workflow を発火しない GitHub 仕様のため、
+#   PAT actor で push する必要がある。mcp-cf-workers と同じ運用。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      # 本 workflow / deploy.yml 自体の変更でも dev tag を切り直して反映できるよう
+      - '.github/workflows/dev-release.yml'
+      - '.github/workflows/deploy.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  dev-release:
+    permissions:
+      contents: write
+    uses: ippoan/ci-workflows/.github/workflows/tag-release.yml@main
+    with:
+      prefix: 'dev-'
+      version_prefix: ''
+      bump: patch
+      create_release: true
+    secrets:
+      TAG_RELEASE_PAT: ${{ secrets.TAG_RELEASE_PAT }}

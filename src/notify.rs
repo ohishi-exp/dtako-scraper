@@ -43,10 +43,17 @@ pub async fn send_result_mail(config: &MailConfig, subject: &str, body: &str) {
             Err(e) => {
                 if attempt < MAX_RETRIES {
                     let delay = INITIAL_BACKOFF_SECS * 2u64.pow(attempt);
-                    warn!("Failed to send email (attempt {}/{}): {e}. Retrying in {delay}s...", attempt + 1, MAX_RETRIES + 1);
+                    warn!(
+                        "Failed to send email (attempt {}/{}): {e}. Retrying in {delay}s...",
+                        attempt + 1,
+                        MAX_RETRIES + 1
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                 } else {
-                    error!("Failed to send email after {} attempts: {e}", MAX_RETRIES + 1);
+                    error!(
+                        "Failed to send email after {} attempts: {e}",
+                        MAX_RETRIES + 1
+                    );
                 }
             }
         }

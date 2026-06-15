@@ -12,9 +12,9 @@ use crate::error::ScraperError;
 /// 進捗イベント
 #[derive(Clone, serde::Serialize)]
 pub struct ProgressEvent {
-    pub event: String,    // "progress" or "result"
+    pub event: String, // "progress" or "result"
     pub comp_id: String,
-    pub step: String,     // "login", "download", "upload", "done"
+    pub step: String, // "login", "download", "upload", "done"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,8 +58,7 @@ pub async fn scrape(
     // CSV ダウンロード
     send_progress(progress_tx, comp_id, "download").await;
     let zip_path =
-        download::download_csv(&session.page, session.download_dir(), start_date, end_date)
-            .await?;
+        download::download_csv(&session.page, session.download_dir(), start_date, end_date).await?;
 
     // ZIP の中身を一覧ログ（KUDGIVT.csv 欠落調査用）
     if let Ok(file) = std::fs::File::open(&zip_path) {
@@ -84,7 +83,10 @@ pub async fn scrape(
     }
 
     let result = if skip_upload {
-        info!("skip_upload=true, skipping upload. ZIP at: {}", zip_path.display());
+        info!(
+            "skip_upload=true, skipping upload. ZIP at: {}",
+            zip_path.display()
+        );
         format!("Download only. ZIP: {}", zip_path.display())
     } else {
         // daiun-salary にアップロード
