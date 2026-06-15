@@ -1,37 +1,78 @@
 name: Deploy
 
-# tag push (`dev-*` 自動採番 / `v*` 手動 stable) または手動 dispatch で発火し、
-# GHCR に image を push → SSH で自前 VPS の docker container を入れ替える。
+# PR を main に向けたら、その PR のコミットを build → GHCR push → SSH で
+# 自前 VPS の docker container を入れ替える (= PR がそのまま VPS に反映される
+# preview deploy 兼ステージング)。reviewer は実動作を見て merge 可否を判断。
+# 手動 dispatch (任意 ref) も残す (緊急の hotfix 再 deploy 用)。
 #
 # 参考: yhonda-ohishi-pub-dev/browser-render-rust の scripts/deploy-kagoya.sh。
 # 機密 (DTAKO_ACCOUNTS / SMTP_*) は VPS 上の /opt/dtako-scraper/.env に置いたまま
 # --env-file で渡り、CI / workflow YAML には一切載らない。
 
 on:
-  push:
-    tags:
-      - 'dev-*'
-      - 'v*'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Image tag to build + deploy (e.g. dev-0.0.5, v0.1.0)'
-        required: true
+      ref:
+        description: 'git ref to build + deploy (branch / sha / tag)'
+        required: false
         type: string
+        default: main
+
+# 全 job 共通 permissions:
+# - contents: write       → auto-merge job (gh pr merge --squash --auto)
+# - pull-requests: write  → disable-auto-merge + auto-merge jobs
+# - packages: write       → GHCR push
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
 
 env:
   GHCR_IMAGE: ghcr.io/ohishi-exp/dtako-scraper
   CONTAINER_NAME: dtako-scraper
   VPS_APP_DIR: /opt/dtako-scraper
 
+# 同時に複数 PR の deploy が走ると VPS 上の container を奪い合うので、
+# repo 全体で 1 つに直列化する。新 PR push が来たら走行中の古い run は cancel。
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: true
+
 jobs:
-  test:
-    name: Cargo test (deploy gate)
+  # CI 開始時に PR の auto-merge を一旦 disable し、deploy 成功後に改めて queue
+  # するパターン (branch protection が緩い repo での誤 merge 防止)。
+  disable-auto-merge:
+    name: Disable PR auto-merge (CI start)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    steps:
+      - name: Force-disable PR auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr merge --disable-auto "$PR_NUMBER" -R "$REPO" || true
+
+  test:
+    name: Cargo test
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      # rust-alc-api ci.yml と同パターンの sccache 配線
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dtako-scraper-test
+          # cache 汚染防止: PR では既存 main cache を読むだけ、書き戻すのは main push 時のみ
+          save-if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo test
@@ -41,6 +82,9 @@ jobs:
     name: Build + push image
     needs: test
     runs-on: ubuntu-latest
+    # PR トリガーでも GHCR push できるよう明示的に再宣言
+    # (org 設定 / repo の Default workflow permissions が Read-only でも
+    # job-level の packages: write は workflow YAML で許可される)。
     permissions:
       contents: read
       packages: write
@@ -49,21 +93,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Determine tag
+      - name: Determine image tag
         id: tag
         env:
-          PUSH_REF: ${{ github.ref_name }}
-          INPUT_TAG: ${{ inputs.tag }}
           EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          if [ "$EVENT_NAME" = "push" ]; then
-            TAG="$PUSH_REF"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            # PR では pr-{number}-{short_sha} を image tag に使う
+            SHORT=$(printf '%s' "$PR_HEAD_SHA" | cut -c1-7)
+            TAG="pr-${PR_NUMBER}-${SHORT}"
           else
-            TAG="$INPUT_TAG"
+            # workflow_dispatch では選んだ ref の sha を使う
+            SHORT=$(printf '%s' "$HEAD_SHA" | cut -c1-7)
+            TAG="manual-${SHORT}"
           fi
-          # tag は dev-N.N.N または vN.N.N (英数字 + . + -) のみ許可
-          if ! printf '%s' "$TAG" | grep -qE '^(dev-|v)[0-9A-Za-z.+-]+$'; then
-            echo "::error::invalid tag format: $TAG (expected dev-X.Y.Z or vX.Y.Z)"
+          # safety: docker tag 文字制限内 + 英数字 + - + _ + . のみ
+          if ! printf '%s' "$TAG" | grep -qE '^[A-Za-z0-9._-]+$'; then
+            echo "::error::invalid image tag: $TAG"
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -104,7 +153,6 @@ jobs:
         env:
           KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
         run: |
-          # KAGOYA_VPS_HOST は "user@host" 形式想定。host 部分だけ取り出して known_hosts に登録
           HOST="${KAGOYA_VPS_HOST##*@}"
           mkdir -p ~/.ssh
           ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
@@ -115,6 +163,11 @@ jobs:
           IMAGE: ${{ env.GHCR_IMAGE }}:${{ needs.build.outputs.tag }}
           CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_DIR: ${{ env.VPS_APP_DIR }}
+          # GITHUB_TOKEN は本 run 限り有効で `packages: read` を持つ。
+          # これを VPS に渡せば VPS 側で `.env` に GHCR_TOKEN を置かなくても
+          # docker pull できる (PR から fork でなければ常に発行される)。
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
           # NOTE: 値は step env: 経由で渡し、SSH コマンドブロックには直接
           # workflow expression を埋め込まない (command injection 防止)。
@@ -122,6 +175,8 @@ jobs:
               IMAGE="$IMAGE" \
               CONTAINER_NAME="$CONTAINER_NAME" \
               APP_DIR="$APP_DIR" \
+              GHCR_TOKEN="$GHCR_TOKEN" \
+              GHCR_USER="$GHCR_USER" \
               'bash -s' <<'REMOTE'
           set -e
 
@@ -129,13 +184,16 @@ jobs:
           : "${CONTAINER_NAME:?CONTAINER_NAME required}"
           : "${APP_DIR:?APP_DIR required}"
 
-          # VPS 側 .env から GHCR pull token を取り出して docker login (token を画面に出さない)
-          if [ -f "$APP_DIR/.env" ]; then
-            GHCR_TOKEN=$(grep -E '^GHCR_TOKEN=' "$APP_DIR/.env" | cut -d= -f2-)
-            if [ -n "$GHCR_TOKEN" ]; then
-              echo "$GHCR_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin >/dev/null
+          # CI 側 GITHUB_TOKEN で docker login (pull 用、本 run 限り有効)。
+          # 未設定なら VPS の /opt/dtako-scraper/.env の GHCR_TOKEN を fallback で使う。
+          if [ -n "${GHCR_TOKEN:-}" ]; then
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-ohishi-exp}" --password-stdin >/dev/null
+          elif [ -f "$APP_DIR/.env" ]; then
+            FALLBACK_TOKEN=$(grep -E '^GHCR_TOKEN=' "$APP_DIR/.env" | cut -d= -f2-)
+            if [ -n "$FALLBACK_TOKEN" ]; then
+              echo "$FALLBACK_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin >/dev/null
             else
-              echo "GHCR_TOKEN missing in $APP_DIR/.env; assuming docker is already logged in to GHCR"
+              echo "no GHCR token (CI or .env); assuming docker is already logged in to GHCR"
             fi
           fi
 
@@ -152,7 +210,7 @@ jobs:
               --name "$CONTAINER_NAME" \
               --restart=unless-stopped \
               --init \
-              -p 127.0.0.1:8080:8080 \
+              -p 127.0.0.1:8081:8080 \
               -v "$APP_DIR/downloads:/app/downloads" \
               --env-file "$APP_DIR/.env" \
               --shm-size=1g \
@@ -162,7 +220,7 @@ jobs:
 
           echo "Waiting for health check..."
           for i in $(seq 1 15); do
-            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+            if curl -sf http://localhost:8081/health > /dev/null 2>&1; then
               echo "Health check passed!"
               docker ps -f name="$CONTAINER_NAME"
               echo "Cleaning up old images..."
@@ -177,3 +235,21 @@ jobs:
           docker logs --tail=200 "$CONTAINER_NAME" || true
           exit 1
           REMOTE
+
+  auto-merge:
+    name: Auto Merge
+    needs: [test, build, deploy]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      needs.test.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.deploy.result == 'success'
+    uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
+    # CROSS-ORG: ohishi-exp → ippoan は `secrets: inherit` で渡らないため明示渡し
+    # (ci-workflows CLAUDE.md「auto-merge.yml クロス org caller」参照)。
+    secrets:
+      CI_APP_ID: ${{ secrets.CI_APP_ID }}
+      CI_APP_PRIVATE_KEY: ${{ secrets.CI_APP_PRIVATE_KEY }}
+      TAG_RELEASE_PAT: ${{ secrets.TAG_RELEASE_PAT }}

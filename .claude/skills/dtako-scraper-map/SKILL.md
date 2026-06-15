@@ -1,8 +1,8 @@
 ---
 name: dtako-scraper-map
-generated-from: dtako-scraper:40443c4a5dae3130bfce30342fe8e4a4d1969ee6
+generated-from: dtako-scraper:dff11f81084554ffa6547f44fcb641ffef8e98a1
 paths: [src/]
-description: ohishi-exp/dtako-scraper (Rust + Axum + chromiumoxide ヘッドレス Chrome の Dtakolog CSV スクレイパー) の構造ナビゲーション。theearth-np.com から csvdata.zip を取得 → daiun-salary API に multipart upload する Cloud Run サービスの module 配置・SSE 進捗・運用 gotcha を 1 枚にまとめる。トリガー:「dtako-scraper」「Dtakolog」「csvdata.zip」「theearth-np」「chromiumoxide」「headless-shell」「KUDGIVT」「comp_id 並列」「daiun-salary upload」等。
+description: ohishi-exp/dtako-scraper (Rust + Axum + chromiumoxide ヘッドレス Chrome の Dtakolog CSV スクレイパー) の構造ナビゲーション。theearth-np.com から csvdata.zip を取得 → daiun-salary API に multipart upload する **Kagoya VPS docker service** (browser-render-rust と同 host を共有) の module 配置・SSE 進捗・PR トリガー CI deploy・運用 gotcha を 1 枚にまとめる。トリガー:「dtako-scraper」「Dtakolog」「csvdata.zip」「theearth-np」「chromiumoxide」「headless-shell」「KUDGIVT」「comp_id 並列」「daiun-salary upload」「Kagoya VPS」「VPS deploy」「F-VOS3020」「scrape-vehicle-setting」等。
 ---
 
 # dtako-scraper-map — ohishi-exp/dtako-scraper 構造ナビゲーション
@@ -41,22 +41,55 @@ theearth-np.com から Dtakolog の `csvdata.zip` を DL → daiun-salary API �
   PID+nanos でユニーク化、② comp_id 別 Mutex で直列化。別 comp_id は並列のまま。
 - **本番ログを意図的に残してある**: `Actual date field values after typing` (西暦/和暦判定)、
   `ZIP contents for comp_id=...` (KUDGIVT 欠落調査用)。`KUDGIVT.csv not found` 系が出たら
-  Cloud Run logs で `ZIP contents` を確認する。
+  VPS の `docker logs dtako-scraper` で `ZIP contents` を確認する。
 - **daiun-salary は dtako-scraper の SSE プロキシ** — daiun-salary 単体に対策を入れても無意味。
-- **CI 自動 deploy 無し** → main に merge/push しても本番に届かない。`./deploy.sh` を手動で叩く
-  (deploy 前に user に AskUserQuestion で確認)。過去に deploy 漏れで 3 日間バグが残った前例あり。
+- **PR トリガー CI deploy** (`.github/workflows/deploy.yml` 1 本に統合済、2026-06-15)。
+  PR を main に向けるとその commit が VPS に preview deploy される (= reviewer は実動作を見て
+  merge 可否を判断)。tag や dev-release.yml のような中継経路はもう無い。
+- **過去の罠** (今は解消): 旧 `deploy.sh` は Cloud Run を叩いていたが実態は VPS 運用で、
+  CI 自動化前は deploy 漏れで 3 日間バグが残った前例あり (CI deploy で再発防止)。
 
 ## CI / deploy から見た立ち位置
 
-- **手動 `./deploy.sh`**: `docker build` → GHCR (`ghcr.io/ohishi-exp/dtako-scraper:latest`) push →
-  Cloud Run `dtako-scraper` (asia-northeast1) deploy。Cloud Run は AR remote-repo
-  (`asia-northeast1-docker.pkg.dev/cloudsql-sv/daiun-salary/...`) 経由で pull。
-- 本番起動 path = Cron `dtako-scraper-daily` (`0 1 * * *` Asia/Tokyo) の日次実行。
-- Dockerfile は 3-stage: rust builder → chromedp/headless-shell → debian-slim runtime
-  (`CHROME_PATH=/headless-shell/headless-shell`)。`--no-allow-unauthenticated`, 2Gi/2cpu。
-- env: `DTAKO_ACCOUNTS` / `DAIUN_SALARY_URL` / `DOWNLOAD_DIR` / `SMTP_*` / `MAIL_TO` (deploy.sh が .env から注入)。
+- **`.github/workflows/deploy.yml`** — `on: pull_request branches: [main]` + `workflow_dispatch`。
+  serial chain: `disable-auto-merge → test → build → deploy → auto-merge`。
+  `concurrency: deploy-vps` で同時走行を直列化 (新 push が古い run を cancel)。
+- **build job**: docker build (`CARGO_BUILD_JOBS=2`, GHA layer cache) → GHCR push
+  (`ghcr.io/ohishi-exp/dtako-scraper:pr-{N}-{sha}` + `:latest`)。
+  `permissions: packages: write` 必須 (workflow + job 両方に declare)。
+- **deploy job**: `webfactory/ssh-agent@v0.9.0` で `KAGOYA_VPS_SSH_KEY` を ssh-agent に load
+  → `ssh ubuntu@<vps>` で docker login (CI の `GITHUB_TOKEN` を渡す = VPS の `.env` に
+  GHCR_TOKEN を置く必要なし) → `docker pull → stop/rm → docker run -d --env-file ... →
+  health check 15 リトライ x 2s → docker image prune`。
+- **auto-merge**: cross-org caller として `CI_APP_ID` / `CI_APP_PRIVATE_KEY` / `TAG_RELEASE_PAT`
+  を `secrets:` 明示渡し (ohishi-exp → ippoan/ci-workflows は `secrets: inherit` 不可)。
+- **本番起動 path** = Cron `dtako-scraper-daily` (`0 1 * * *` Asia/Tokyo) が VPS 上で
+  `POST /scrape` を叩く形 → **PR の deploy は cron 時刻を避けて push** する
+  (container 再起動で scrape が中断するため)。
+- **Dockerfile** は 3-stage: rust builder → chromedp/headless-shell → debian-slim runtime
+  (`CHROME_PATH=/headless-shell/headless-shell`、`--security-opt seccomp=unconfined`、
+  `--shm-size=1g`、`--init`)。
+- **機密の扱い**: `DTAKO_ACCOUNTS` / `DAIUN_SALARY_URL` / `SMTP_*` / `MAIL_TO` は VPS の
+  `/opt/dtako-scraper/.env` に置いたまま `--env-file` で渡る = workflow YAML には一切載らない。
+  GHCR pull token は CI の `GITHUB_TOKEN` を SSH 経由で渡すので VPS の `.env` には不要。
+
+## 必要な secrets / vars
+
+`KAGOYA_VPS_*` は browser-render-rust 等と同 VPS を共有する想定で **ohishi-exp org level secret**
+として配布 (GCP Secret Manager が SoT、`secrets-inventory-gcp` proxy の App mode 経由で同期):
+
+| 名前 | scope | 値 |
+|---|---|---|
+| `KAGOYA_VPS_SSH_KEY` | ohishi-exp org | Kagoya VPS 用 SSH 秘密鍵 |
+| `KAGOYA_VPS_HOST` | ohishi-exp org | `ubuntu@<IP>` |
+| `CI_APP_ID` / `CI_APP_PRIVATE_KEY` / `TAG_RELEASE_PAT` | ohishi-exp org | auto-merge job 用 |
+
+`KAGOYA_VPS_*` を ohishi-exp に投入するには secrets-inventory-gcp の Cloud Run env で
+**App mode** を有効化 (`GH_APP_ID_SECRET_NAME` + `GH_APP_PRIVATE_KEY_SECRET_NAME` セット)
+する必要あり (Refs ippoan/secrets-inventory-gcp#51、2026-06-15)。
 
 ## 関連 skill
 
-- `package-publish-debug` — GHCR push denied / AR remote-repo proxy / Cloud Run の ghcr image 拒否時
+- `package-publish-debug` — GHCR push denied (package access 設定漏れ等)
+- `secret-inject` / `secrets-inventory-gcp-map` — VPS secrets (`KAGOYA_VPS_*`) の投入経路
 - `cross-repo-symbol-index` — この per-repo map の運用方針 (generated-from 鮮度 hook)
