@@ -25,8 +25,21 @@ env:
   VPS_APP_DIR: /opt/dtako-scraper
 
 jobs:
+  test:
+    name: Cargo test (deploy gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo test
+        run: cargo test --all-features
+
   build:
     name: Build + push image
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -103,8 +116,8 @@ jobs:
           CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_DIR: ${{ env.VPS_APP_DIR }}
         run: |
-          # NOTE: 値は env: 経由で渡し、SSH コマンドブロックには直接 ${{ }} を埋め込まない
-          # (command injection 防止)。
+          # NOTE: 値は step env: 経由で渡し、SSH コマンドブロックには直接
+          # workflow expression を埋め込まない (command injection 防止)。
           ssh -o StrictHostKeyChecking=yes "$KAGOYA_VPS_HOST" \
               IMAGE="$IMAGE" \
               CONTAINER_NAME="$CONTAINER_NAME" \
