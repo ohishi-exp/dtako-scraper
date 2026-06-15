@@ -21,7 +21,7 @@ docker build -t dtako-scraper .  # Docker イメージビルド
 
 # Deploy: 通常は不要 (PR を main に merge すると CI が自動 deploy)。
 # 緊急時の手動 deploy fallback (要: 手元 docker + VPS への SSH 鍵):
-DEPLOY_HOST="ubuntu@<vps-ip>" ./scripts/deploy.sh
+KAGOYA_VPS_HOST="ubuntu@<vps-ip>" ./scripts/deploy.sh
 ```
 
 ## API
@@ -108,13 +108,18 @@ stable リリースは `v*` tag を手動で push (= 同じ deploy.yml が拾う
 置いたまま `--env-file` で渡る = GitHub Actions / workflow YAML には一切載らない**。
 鍵 rotate は VPS の `.env` を直接編集 + container 再起動。
 
-#### 必要な GitHub repo secrets
+#### 必要な GitHub org / repo secrets
 
-| 名前 | 値 |
-|---|---|
-| `DEPLOY_SSH_KEY` | VPS 用 SSH 秘密鍵 |
-| `DEPLOY_HOST` | `ubuntu@<IP>` (browser-render と同 Kagoya VPS) |
-| `TAG_RELEASE_PAT` | dev-release.yml が tag push → deploy.yml 連鎖発火に必要 |
+`KAGOYA_VPS_*` は同 Kagoya VPS に deploy する他 repo (browser-render-rust 等)
+とも共有する想定で、ohishi-exp **org level secret** に格納し `secrets: inherit`
+で読む (= GCP Secret Manager の SoT もこの名前で 1 つ)。
+
+| 名前 | scope | 値 |
+|---|---|---|
+| `KAGOYA_VPS_SSH_KEY` | org | Kagoya VPS 用 SSH 秘密鍵 |
+| `KAGOYA_VPS_HOST` | org | `ubuntu@<IP>` (browser-render と同 VPS) |
+| `TAG_RELEASE_PAT` | repo or org | dev-release.yml が tag push → deploy.yml 連鎖発火に必要 |
+| `CI_APP_ID` / `CI_APP_PRIVATE_KEY` | org (既存) | auto-merge job (ci-workflows/auto-merge.yml) が App token で merge するため |
 
 #### VPS 側の前提 (一度だけ準備)
 

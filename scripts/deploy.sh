@@ -8,7 +8,7 @@
 # browser-render-rust の scripts/deploy-kagoya.sh をモデルにしている。
 #
 # 必須環境変数 (.env または env):
-#   DEPLOY_HOST  — "user@host" 形式 (例: "ubuntu@133.18.162.83")
+#   KAGOYA_VPS_HOST  — "user@host" 形式 (例: "ubuntu@133.18.162.83")
 #
 # 任意:
 #   $1           — image tag (省略時は git rev-parse --short HEAD)
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-# .env から DEPLOY_HOST を読みたい時用
+# .env から KAGOYA_VPS_HOST を読みたい時用
 if [ -f .env ]; then
     set -a
     # shellcheck disable=SC1091
@@ -33,11 +33,11 @@ TAG="${1:-$(git rev-parse --short HEAD)}"
 CONTAINER_NAME="dtako-scraper"
 APP_DIR="/opt/dtako-scraper"
 
-: "${DEPLOY_HOST:?DEPLOY_HOST must be set (e.g. 'ubuntu@133.18.162.83')}"
+: "${KAGOYA_VPS_HOST:?KAGOYA_VPS_HOST must be set (e.g. 'ubuntu@133.18.162.83')}"
 
 echo "=== dtako-scraper manual deploy ==="
 echo "Image:  ${IMAGE}:${TAG}"
-echo "Target: ${DEPLOY_HOST}"
+echo "Target: ${KAGOYA_VPS_HOST}"
 echo
 
 echo "=== Building Docker image ==="
@@ -54,7 +54,7 @@ docker push "${IMAGE}:latest"
 
 echo
 echo "=== Deploying via SSH ==="
-ssh "$DEPLOY_HOST" \
+ssh "$KAGOYA_VPS_HOST" \
     IMAGE="${IMAGE}:${TAG}" \
     CONTAINER_NAME="$CONTAINER_NAME" \
     APP_DIR="$APP_DIR" \

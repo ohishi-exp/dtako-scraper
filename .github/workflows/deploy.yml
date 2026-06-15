@@ -85,27 +85,27 @@ jobs:
       - name: Set up SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          ssh-private-key: ${{ secrets.KAGOYA_VPS_SSH_KEY }}
 
       - name: Add VPS host key
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
         run: |
-          # DEPLOY_HOST は "user@host" 形式想定。host 部分だけ取り出して known_hosts に登録
-          HOST="${DEPLOY_HOST##*@}"
+          # KAGOYA_VPS_HOST は "user@host" 形式想定。host 部分だけ取り出して known_hosts に登録
+          HOST="${KAGOYA_VPS_HOST##*@}"
           mkdir -p ~/.ssh
           ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy container on VPS
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
           IMAGE: ${{ env.GHCR_IMAGE }}:${{ needs.build.outputs.tag }}
           CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_DIR: ${{ env.VPS_APP_DIR }}
         run: |
           # NOTE: 値は env: 経由で渡し、SSH コマンドブロックには直接 ${{ }} を埋め込まない
           # (command injection 防止)。
-          ssh -o StrictHostKeyChecking=yes "$DEPLOY_HOST" \
+          ssh -o StrictHostKeyChecking=yes "$KAGOYA_VPS_HOST" \
               IMAGE="$IMAGE" \
               CONTAINER_NAME="$CONTAINER_NAME" \
               APP_DIR="$APP_DIR" \

@@ -1,13 +1,40 @@
 name: CI
 
-# PR を main に向けた時に docker build の sanity check + cargo test を回す。
-# push / deploy はしない (deploy は dev-release.yml + deploy.yml に分離)。
+# PR を main に向けた時に docker build の sanity check + cargo test を回し、
+# 全 green なら auto-merge する (frontend-ci.yml の dual-step pattern を踏襲)。
+# push / deploy はしない (deploy は dev-release.yml + deploy.yml に分離、
+# tag push 限定なので auto-merge gate には載らない)。
 
 on:
   pull_request:
     branches: [main]
 
+# 内蔵 auto-merge job のために dual-step pattern と同じ permissions が必要。
+# - contents: write       → auto-merge job (gh pr merge --auto --squash)
+# - pull-requests: write  → disable-auto-merge + auto-merge jobs
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+
 jobs:
+  # CI 開始時に PR の auto-merge を一旦 disable し、本 run の auto-merge job が
+  # 改めて queue するパターン (branch protection が緩い repo での誤 merge 防止)。
+  disable-auto-merge:
+    name: Disable PR auto-merge (CI start)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Force-disable PR auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr merge --disable-auto "$PR_NUMBER" -R "$REPO" || true
+
   test:
     name: Cargo test
     runs-on: ubuntu-latest
@@ -36,3 +63,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ghcr.io/ohishi-exp/dtako-scraper:pr-${{ github.event.pull_request.number }}
+
+  auto-merge:
+    name: Auto Merge
+    needs: [test, build]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      needs.test.result == 'success' &&
+      needs.build.result == 'success'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
+    # PR run で走る deploy job は無い (deploy は tag push 限定) ので
+    # verify_deploy_gate は default の true で OK (false positive を起こさない)。
+    secrets: inherit
