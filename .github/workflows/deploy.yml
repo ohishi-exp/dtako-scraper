@@ -163,6 +163,11 @@ jobs:
           IMAGE: ${{ env.GHCR_IMAGE }}:${{ needs.build.outputs.tag }}
           CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_DIR: ${{ env.VPS_APP_DIR }}
+          # GITHUB_TOKEN は本 run 限り有効で `packages: read` を持つ。
+          # これを VPS に渡せば VPS 側で `.env` に GHCR_TOKEN を置かなくても
+          # docker pull できる (PR から fork でなければ常に発行される)。
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
           # NOTE: 値は step env: 経由で渡し、SSH コマンドブロックには直接
           # workflow expression を埋め込まない (command injection 防止)。
@@ -170,6 +175,8 @@ jobs:
               IMAGE="$IMAGE" \
               CONTAINER_NAME="$CONTAINER_NAME" \
               APP_DIR="$APP_DIR" \
+              GHCR_TOKEN="$GHCR_TOKEN" \
+              GHCR_USER="$GHCR_USER" \
               'bash -s' <<'REMOTE'
           set -e
 
@@ -177,13 +184,16 @@ jobs:
           : "${CONTAINER_NAME:?CONTAINER_NAME required}"
           : "${APP_DIR:?APP_DIR required}"
 
-          # VPS 側 .env から GHCR pull token を取り出して docker login (token を画面に出さない)
-          if [ -f "$APP_DIR/.env" ]; then
-            GHCR_TOKEN=$(grep -E '^GHCR_TOKEN=' "$APP_DIR/.env" | cut -d= -f2-)
-            if [ -n "$GHCR_TOKEN" ]; then
-              echo "$GHCR_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin >/dev/null
+          # CI 側 GITHUB_TOKEN で docker login (pull 用、本 run 限り有効)。
+          # 未設定なら VPS の /opt/dtako-scraper/.env の GHCR_TOKEN を fallback で使う。
+          if [ -n "${GHCR_TOKEN:-}" ]; then
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-ohishi-exp}" --password-stdin >/dev/null
+          elif [ -f "$APP_DIR/.env" ]; then
+            FALLBACK_TOKEN=$(grep -E '^GHCR_TOKEN=' "$APP_DIR/.env" | cut -d= -f2-)
+            if [ -n "$FALLBACK_TOKEN" ]; then
+              echo "$FALLBACK_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin >/dev/null
             else
-              echo "GHCR_TOKEN missing in $APP_DIR/.env; assuming docker is already logged in to GHCR"
+              echo "no GHCR token (CI or .env); assuming docker is already logged in to GHCR"
             fi
           fi
 
