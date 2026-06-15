@@ -75,32 +75,29 @@ daiun-salary 単体に対策入れても意味なし。
 事例: 2026-04-27 手動 `/scrape` 検証中に「KUDGIVT.csv not found in ZIP」エラー
 (`feedback_dtako_scraper_concurrency`)。
 
-### Deploy: CI 自動化済み (PR + dev タグ運用)
+### Deploy: PR トリガーで CI 自動化
 
 deploy 先は **自前 VPS (docker / SSH)** — `browser-render-rust` と同じ Kagoya VPS の
 docker container として動作する。Cloud Run ではない (旧 `deploy.sh` の
 `gcloud run deploy` は実態と乖離していたため削除済み、2026-06-15)。
 
-#### 自動 deploy フロー (通常運用)
+#### deploy.yml の serial chain (1 workflow にまとめて並列無駄を排除)
 
 ```
-1. PR を main に向ける
-   └ .github/workflows/test.yml (PR トリガー) → cargo fmt/test + docker build sanity check
-
-2. PR を merge (= main push)
-   └ .github/workflows/dev-release.yml (push main) → ci-workflows/tag-release.yml で
-      `dev-{patch}` tag を自動採番 + push (mcp-cf-workers と同パターン、
-      `TAG_RELEASE_PAT` actor で push しないと次の workflow が発火しない仕様)
-
-3. tag push を検知
-   └ .github/workflows/deploy.yml (push tag dev-*) → docker build →
-      GHCR push (ghcr.io/ohishi-exp/dtako-scraper:{tag} + :latest) →
-      SSH で VPS に docker pull && container 入れ替え && health check (30s) &&
-      docker image prune
+PR を main に向ける (= deploy.yml 起動)
+  ├ disable-auto-merge (CI 開始時に PR の auto-merge を一旦 disable)
+  └ test (cargo fmt + cargo test)
+      └ build (docker build + GHCR push to :pr-{N}-{sha} + :latest)
+          └ deploy (SSH で VPS に docker pull + container 入れ替え + health check 30s)
+              └ auto-merge (ci-workflows/auto-merge.yml@main、CI_APP_ID 明示渡し)
 ```
 
-stable リリースは `v*` tag を手動で push (= 同じ deploy.yml が拾う)。
-緊急時は `gh workflow run deploy.yml -f tag=dev-X.Y.Z` または `./scripts/deploy.sh`。
+- **PR を出した時点でその PR のコミットが VPS に反映される** (preview deploy 兼ステージング)
+- reviewer は実動作を見て merge 可否を判断
+- auto-merge が enable されれば test/build/deploy 全 green で自動 merge
+- concurrency: `deploy-vps` で同時走行を直列化 (新 PR push は走行中の古い run を cancel)
+- 緊急 deploy: `gh workflow run deploy.yml -f ref=<sha-or-branch>` (workflow_dispatch)
+  または手元から `KAGOYA_VPS_HOST=ubuntu@... ./scripts/deploy.sh`
 
 #### 機密の扱い
 
@@ -118,8 +115,7 @@ stable リリースは `v*` tag を手動で push (= 同じ deploy.yml が拾う
 |---|---|---|
 | `KAGOYA_VPS_SSH_KEY` | org | Kagoya VPS 用 SSH 秘密鍵 |
 | `KAGOYA_VPS_HOST` | org | `ubuntu@<IP>` (browser-render と同 VPS) |
-| `TAG_RELEASE_PAT` | repo or org | dev-release.yml が tag push → deploy.yml 連鎖発火に必要 |
-| `CI_APP_ID` / `CI_APP_PRIVATE_KEY` | org (既存) | auto-merge job (ci-workflows/auto-merge.yml) が App token で merge するため |
+| `CI_APP_ID` / `CI_APP_PRIVATE_KEY` | org (既存) | auto-merge job (ci-workflows/auto-merge.yml) が App token で merge するため。cross-org caller なので deploy.yml で `secrets:` 明示渡し |
 
 #### VPS 側の前提 (一度だけ準備)
 
