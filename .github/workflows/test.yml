@@ -79,4 +79,12 @@ jobs:
     uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
     # PR run で走る deploy job は無い (deploy は tag push 限定) ので
     # verify_deploy_gate は default の true で OK (false positive を起こさない)。
-    secrets: inherit
+    #
+    # CROSS-ORG: ohishi-exp → ippoan は `secrets: inherit` で渡らないため明示渡し
+    # (ci-workflows CLAUDE.md「auto-merge.yml クロス org caller」参照)。
+    # CI_APP_ID / CI_APP_PRIVATE_KEY / TAG_RELEASE_PAT は ohishi-exp の
+    # org or repo secret として visible である必要がある。
+    secrets:
+      CI_APP_ID: ${{ secrets.CI_APP_ID }}
+      CI_APP_PRIVATE_KEY: ${{ secrets.CI_APP_PRIVATE_KEY }}
+      TAG_RELEASE_PAT: ${{ secrets.TAG_RELEASE_PAT }}
