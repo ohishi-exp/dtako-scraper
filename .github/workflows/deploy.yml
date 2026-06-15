@@ -103,8 +103,8 @@ jobs:
           CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_DIR: ${{ env.VPS_APP_DIR }}
         run: |
-          # NOTE: 値は env: 経由で渡し、SSH コマンドブロックには直接 ${{ }} を埋め込まない
-          # (command injection 防止)。
+          # NOTE: 値は step env: 経由で渡し、SSH コマンドブロックには直接
+          # workflow expression を埋め込まない (command injection 防止)。
           ssh -o StrictHostKeyChecking=yes "$KAGOYA_VPS_HOST" \
               IMAGE="$IMAGE" \
               CONTAINER_NAME="$CONTAINER_NAME" \
