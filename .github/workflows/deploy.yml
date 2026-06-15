@@ -25,8 +25,21 @@ env:
   VPS_APP_DIR: /opt/dtako-scraper
 
 jobs:
+  test:
+    name: Cargo test (deploy gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo test
+        run: cargo test --all-features
+
   build:
     name: Build + push image
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
