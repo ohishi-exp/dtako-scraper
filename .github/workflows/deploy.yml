@@ -12,6 +12,14 @@ name: Deploy
 on:
   pull_request:
     branches: [main]
+  # main への merge (push) では VPS への再 deploy はしない (PR 時点で既に preview
+  # deploy 済みのため冗長)。それでも push トリガーを持たせるのは、Swatinem/
+  # rust-cache の save-if (下記 test job) が `github.ref == 'refs/heads/main'`
+  # を書き戻し条件にしており、push トリガーが無いと **一生キャッシュが更新
+  # されない**バグがあったため (browser-render-rust の ci.yml は push: master
+  # を持つのでこの問題が起きない、2026-07-01 に発覚・修正)。
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -141,6 +149,10 @@ jobs:
 
   deploy:
     name: SSH deploy to VPS
+    # main への push (merge) では VPS deploy をしない — PR 時点で既にその commit が
+    # preview deploy 済みのため冗長 (push トリガーの目的は test job のキャッシュ
+    # 書き戻しのみ、上記 on: push のコメント参照)。
+    if: github.event_name != 'push'
     needs: build
     runs-on: ubuntu-latest
     steps:

@@ -182,6 +182,21 @@ PR を main に向ける (= deploy.yml 起動)
 - 緊急 deploy: `gh workflow run deploy.yml -f ref=<sha-or-branch>` (workflow_dispatch)
   または手元から `KAGOYA_VPS_HOST=ubuntu@... ./scripts/deploy.sh`
 
+#### `push: branches: [main]` トリガー (cache 書き戻し専用、2026-07-01 追加)
+
+`test` job の Swatinem/rust-cache は `save-if: github.event_name == 'workflow_dispatch' ||
+github.ref == 'refs/heads/main'` だが、**deploy.yml が元々 `pull_request` トリガーしか
+持たなかったため、この条件が (手動 workflow_dispatch を除いて) 一生 true にならず
+sccache/rust-cache が実質更新されないバグがあった** (browser-render-rust の `ci.yml` は
+`push: [master]` を持つのでこの問題が起きない)。
+
+`push: branches: [main]` を追加してこれを解消したが、**`deploy` job は
+`if: github.event_name != 'push'` で push イベント時は skip する** (main merge 時点の
+commit は PR の時点で既に VPS に preview deploy 済みのため、push 時の再 deploy は冗長)。
+push イベントで走るのは `test` (cache 書き戻し) と `build` (docker `:latest` タグの GHA
+layer cache 書き戻し) のみ。`disable-auto-merge`/`auto-merge` job は元々
+`github.event_name == 'pull_request'` 限定なので push イベントでは走らない (影響なし)。
+
 #### 機密の扱い
 
 **`DTAKO_ACCOUNTS` / `SMTP_*` / `GHCR_TOKEN` は VPS の `/opt/dtako-scraper/.env` に
