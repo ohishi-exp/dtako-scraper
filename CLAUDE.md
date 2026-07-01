@@ -39,28 +39,40 @@ KAGOYA_VPS_HOST="ubuntu@<vps-ip>" ./scripts/deploy.sh
 ## Config (環境変数)
 
 - `DTAKO_ACCOUNTS` — 企業アカウント JSON 配列
-- `DAIUN_SALARY_URL` — daiun-salary API URL
+- `DAIUN_SALARY_URL` — **変数名は歴史的経緯で "daiun-salary" だが、実体は rust-alc-api の Cloud Run URL**
+  (`https://rust-alc-api-xxxxx.run.app`)。daiun-salary (別リポジトリ・別サービス) ではない。要注意
+  (2026-07-01 に混同による誤修正が発生、下記「運用上の罠」参照)
 - `DOWNLOAD_DIR` — ダウンロード先
 - `PORT` — サーバーポート (default: 8080)
 - `CHROME_PATH` — Chrome/headless-shell パス
 
 ## Related Projects
 
-- `/home/yhonda/rust/daiun-salary` — 給与管理バックエンド（アップロード先）
+- `/home/yhonda/rust/rust-alc-api` — **実際のアップロード先** (`DAIUN_SALARY_URL` env var の実体)。
+  `crates/alc-dtako/src/dtako_upload.rs::upload_zip` (`POST /api/upload`) が受け口
+- `/home/yhonda/rust/daiun-salary` — 別プロジェクト (北海大運の給与管理システム)。**アップロード先ではない**
 - `/home/yhonda/rust/browser-render_rust` — 参考実装（chromiumoxide パターン）
 
 <!-- migrated from memory/feedback_*.md (2026-05-11) -->
 
 ## 運用上の罠
 
-### アップロード先は `/internal/upload` (`/api/upload` は 403 Forbidden になる)
+### アップロード先は rust-alc-api の `/api/upload` (daiun-salary ではない、`/internal/upload` は誤り)
 
-daiun-salary の `/api/upload` は `require_jwt` (管理者 JWT Bearer トークン) 必須のエンドポイントで、
-dtako-scraper のようなサーバー間呼び出しからは常に 403 Forbidden になる。dtako-scraper → daiun-salary
-のアップロードは **`/internal/upload`** (認証不要、multipart の `tenant_id` フィールドで判定) を使う
-こと。`src/scraper/upload.rs` 参照。
+`DAIUN_SALARY_URL` という変数名から daiun-salary (別リポジトリ) への送信だと誤解しやすいが、
+**実体は rust-alc-api の Cloud Run URL**。正しい送信先は rust-alc-api の
+`crates/alc-dtako/src/dtako_upload.rs::upload_zip` (`POST /api/upload`、`require_tenant_header`
+配下)。multipart の `file` フィールドに ZIP、`X-Tenant-ID` ヘッダーでテナント識別する。
 
-**修正済** (2026-07-01): `/api/upload` → `/internal/upload` に変更。
+**2026-07-01 に daiun-salary だと誤認して `/internal/upload` (daiun-salary 側のパスで
+rust-alc-api には存在しない) に変更する誤修正が一度 merge された。`/api/upload` に訂正済み。**
+
+`/api/upload` 自体は昔から正しいパスだったが、この頃 rust-alc-api が **#434 (Cloud Run IAM
+lockdown)** で本番 backend の `allUsers` invoker 権限を撤去したため、アプリ層のパス・ヘッダーが
+正しくても **Google Front End (GFE) レベルで 403 Forbidden になる** (`<title>403 Forbidden</title>`
+`Your client does not have permission to get URL ... from this server.` という定型文言はこれ)。
+恒久対応には OIDC ID token の発行、または auth-worker `/alc-proxy` 経由へのルーティング変更など
+アーキテクチャ判断が必要 (Refs rust-alc-api#434)。
 
 ### 同一 comp_id への並列 `/scrape` は race condition
 
