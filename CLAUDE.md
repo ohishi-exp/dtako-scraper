@@ -53,6 +53,15 @@ KAGOYA_VPS_HOST="ubuntu@<vps-ip>" ./scripts/deploy.sh
 
 ## 運用上の罠
 
+### アップロード先は `/internal/upload` (`/api/upload` は 403 Forbidden になる)
+
+daiun-salary の `/api/upload` は `require_jwt` (管理者 JWT Bearer トークン) 必須のエンドポイントで、
+dtako-scraper のようなサーバー間呼び出しからは常に 403 Forbidden になる。dtako-scraper → daiun-salary
+のアップロードは **`/internal/upload`** (認証不要、multipart の `tenant_id` フィールドで判定) を使う
+こと。`src/scraper/upload.rs` 参照。
+
+**修正済** (2026-07-01): `/api/upload` → `/internal/upload` に変更。
+
 ### 同一 comp_id への並列 `/scrape` は race condition
 
 `/scrape` は **同一 comp_id への並列実行に弱い**。原因 2 つ:

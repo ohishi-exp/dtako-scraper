@@ -4,7 +4,9 @@ use tracing::{error, info};
 
 use crate::error::ScraperError;
 
-/// rust-alc-api の /api/upload に ZIP ファイルを送信
+/// daiun-salary の /internal/upload (機械間呼び出し用、認証不要) に ZIP ファイルを送信。
+/// `/api/upload` は require_jwt (管理者 JWT Bearer) 必須のため、dtako-scraper のような
+/// サーバー間呼び出しには使えない (403 Forbidden の原因、ohishi-exp/dtako-scraper#メール報告分)。
 pub async fn upload_zip(
     daiun_salary_url: &str,
     tenant_id: &str,
@@ -19,7 +21,7 @@ pub async fn upload_zip(
         .to_string_lossy()
         .to_string();
 
-    let url = format!("{}/api/upload", daiun_salary_url);
+    let url = format!("{}/internal/upload", daiun_salary_url);
     info!("Uploading {:?} to {} (tenant={})", zip_path, url, tenant_id);
 
     match send_multipart(&url, tenant_id, &filename, &file_bytes).await {
