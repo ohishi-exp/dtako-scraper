@@ -124,8 +124,17 @@ rust-alc-api への ingest) であり、role を分けるとメンテナンス�
 - Actions → **Provision device credential** → Run workflow で `tenant_id` を入力して実行
 - **企業 (tenant) を追加するたびに、その tenant_id で 1 回実行する必要がある**
   (browser-render-rust の 1-tenant-固定運用とは異なる)
+- **`tenant_id` 欄には UUID (rust-alc-api の `tenants.id`) を入れる。`comp_id` (数字、
+  例: `27324455`) を間違えて入れないこと** — 2026-07-01 に一度誤入力しかけた事例あり
 - `INTERNAL_SHARED_SECRET` は ohishi-exp org secret (browser-render-rust と共用、CI にだけ
   置く。VPS には配らない)
+
+**初回実行時の既知バグ (2026-07-01、修正済み)**: `scripts/provision-remote.sh` に GHCR
+ログインが無く、`docker run` が `Unable to find image ... denied` で失敗した (`.env` の
+`DTAKO_DEVICE_CREDENTIALS` 自体は正常に書き込まれるが container 再起動だけ失敗する)。
+deploy.yml と同じ GHCR login パターン (CI の job 限り `GITHUB_TOKEN` → 無ければ VPS の
+`.env` の `GHCR_TOKEN` に fallback) を追加して修正した。同じ症状が再発したら
+`docker login ghcr.io` 周りを疑う。
 
 ### 同一 comp_id への並列 `/scrape` は race condition
 
