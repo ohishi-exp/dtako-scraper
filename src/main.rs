@@ -1,4 +1,5 @@
 mod config;
+mod device_auth;
 mod error;
 mod notify;
 mod scraper;
@@ -135,12 +136,14 @@ async fn scrape_handler(
                 }
             };
 
+            let device_credential = config.device_credentials.get(&account.tenant_id);
             let result = scraper::scrape(
                 account,
                 &start_date,
                 &end_date,
                 &config.download_dir,
-                &config.daiun_salary_url,
+                &config.auth_worker_url,
+                device_credential,
                 skip_upload,
                 Some(&progress_tx),
             )

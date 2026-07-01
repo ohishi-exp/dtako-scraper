@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 /// 企業アカウント設定
@@ -6,8 +8,16 @@ pub struct Account {
     pub comp_id: String,
     pub user_name: String,
     pub user_pass: String,
-    /// daiun-salary 側の tenant_id
+    /// rust-alc-api 側の tenant_id (device credential のルックアップキーにもなる)
     pub tenant_id: String,
+}
+
+/// auth-worker device credential (tenant_id ごとに 1 組)。
+/// pairing は `.github/workflows/provision-device.yml` で行う。
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceCredential {
+    pub device_id: String,
+    pub device_secret: String,
 }
 
 /// アプリケーション設定
@@ -15,8 +25,11 @@ pub struct Account {
 pub struct AppConfig {
     /// 企業アカウント一覧（JSON配列）
     pub accounts: Vec<Account>,
-    /// daiun-salary の内部 API URL
-    pub daiun_salary_url: String,
+    /// auth-worker の URL (`/device/token` + `/device-data-proxy/*` を叩く)
+    pub auth_worker_url: String,
+    /// tenant_id -> device credential。rust-alc-api への upload はこの経由でのみ行う
+    /// (Cloud Run IAM lockdown 下では直接 HTTP は通らない、rust-alc-api#434)
+    pub device_credentials: HashMap<String, DeviceCredential>,
     /// ダウンロードディレクトリ
     pub download_dir: String,
     /// サーバーポート
@@ -39,8 +52,14 @@ impl AppConfig {
         let accounts: Vec<Account> =
             serde_json::from_str(&accounts_json).expect("DTAKO_ACCOUNTS must be valid JSON array");
 
-        let daiun_salary_url =
-            std::env::var("DAIUN_SALARY_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+        let auth_worker_url =
+            std::env::var("AUTH_WORKER_URL").unwrap_or_else(|_| "https://auth.ippoan.org".into());
+        let device_credentials: HashMap<String, DeviceCredential> =
+            match std::env::var("DTAKO_DEVICE_CREDENTIALS") {
+                Ok(json) if !json.is_empty() => serde_json::from_str(&json)
+                    .expect("DTAKO_DEVICE_CREDENTIALS must be a valid JSON object"),
+                _ => HashMap::new(),
+            };
         let download_dir =
             std::env::var("DOWNLOAD_DIR").unwrap_or_else(|_| "/tmp/dtako-downloads".into());
         let port = std::env::var("PORT")
@@ -62,7 +81,8 @@ impl AppConfig {
 
         Self {
             accounts,
-            daiun_salary_url,
+            auth_worker_url,
+            device_credentials,
             download_dir,
             port,
             mail,

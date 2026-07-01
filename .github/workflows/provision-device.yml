@@ -1,0 +1,111 @@
+name: Provision device credential
+
+# INTERNAL_SHARED_SECRET を使って auth-worker から device credential を「1 tenant あたり
+# 1 回」発行し、Kagoya VPS の /opt/dtako-scraper/.env の DTAKO_DEVICE_CREDENTIALS
+# (tenant_id -> {device_id, device_secret} の JSON) に merge する (+ 最新 image で再起動)。
+#
+# 設計 (rust-alc-api#434 の device-token 方式、browser-render-rust と同パターン):
+#   - INTERNAL_SHARED_SECRET は **CI (GitHub Actions) にだけ** 置き、VPS には配らない。
+#   - VPS に届くのは tenant + `device-dtako-ingest` role (= /api/dtako-logs/bulk と
+#     /api/upload、ippoan/auth-worker#341 で dtako 系サービス共用に拡張済み) に
+#     スコープされた device credential だけ。個別 revoke 可・tenant 詐称不可。
+#   - dtako-scraper は DTAKO_ACCOUNTS の企業ごとに別 tenant_id を持ち得るため、
+#     1 device credential = 1 tenant_id。tenant を追加/rotate するたびにこの
+#     workflow を該当 tenant_id で 1 回叩く (browser-render-rust は 1 tenant 固定
+#     だが、dtako-scraper は複数 tenant を扱うため tenant ごとに実行が必要)。
+#
+# 通常の deploy (deploy.yml) は device 設定を一切触らない (.env に既に書かれた
+# 値をそのまま使う)。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: 'dtako アップロード先 tenant の UUID (rust-alc-api の tenants.id、DTAKO_ACCOUNTS の tenant_id と一致させる)'
+        required: true
+        type: string
+      label:
+        description: 'device のラベル (auth-worker 側の識別用)'
+        required: false
+        default: 'dtako-scraper (Kagoya VPS)'
+        type: string
+
+permissions:
+  contents: read
+
+# 通常 deploy (deploy.yml deploy job) と同じ Kagoya VPS を触るので同一 group で直列化する。
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Pair device and write VPS .env
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.KAGOYA_VPS_SSH_KEY }}
+
+      - name: Add VPS host key
+        env:
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
+        run: |
+          HOST="${KAGOYA_VPS_HOST##*@}"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # pairing と .env 書き込みを 1 step に閉じる (= device_secret を $GITHUB_ENV に
+      # 残さず、この shell 内だけで完結させる)。DEVICE_SECRET は provision-remote.sh の
+      # SSH env-var 前置き経路でのみ VPS に渡り、ログには出ない。
+      - name: Pair device and provision VPS .env
+        env:
+          INTERNAL_SHARED_SECRET: ${{ secrets.INTERNAL_SHARED_SECRET }}
+          AUTH_WORKER_URL: ${{ vars.AUTH_WORKER_URL || 'https://auth.ippoan.org' }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+          DEVICE_LABEL: ${{ inputs.label }}
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INTERNAL_SHARED_SECRET:-}" ]; then
+            echo "::error::secrets.INTERNAL_SHARED_SECRET が未設定です (browser-render-rust と同値を ohishi-exp org/repo secret に登録してください)"
+            exit 1
+          fi
+          if [ -z "${KAGOYA_VPS_HOST:-}" ]; then
+            echo "::error::secrets.KAGOYA_VPS_HOST が未設定です"
+            exit 1
+          fi
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::error::tenant_id input が空です"
+            exit 1
+          fi
+
+          echo "Pairing device via ${AUTH_WORKER_URL%/}/device/pair-internal (tenant=${TENANT_ID}, role=device-dtako-ingest)..."
+          body=$(jq -nc --arg t "$TENANT_ID" --arg l "$DEVICE_LABEL" \
+            '{tenant_id:$t, label:$l, role:"device-dtako-ingest"}')
+          resp=$(curl -sS -X POST "${AUTH_WORKER_URL%/}/device/pair-internal" \
+            -H "X-Internal-Shared-Secret: ${INTERNAL_SHARED_SECRET}" \
+            -H "Content-Type: application/json" \
+            --data-binary "$body")
+
+          DEVICE_ID=$(printf '%s' "$resp" | jq -r '.device_id // empty')
+          DEVICE_SECRET=$(printf '%s' "$resp" | jq -r '.device_secret // empty')
+          if [ -z "$DEVICE_ID" ] || [ -z "$DEVICE_SECRET" ]; then
+            echo "::error::device pairing に失敗しました"
+            printf '%s' "$resp" | jq -c 'if type=="object" then del(.device_secret) else . end' 2>/dev/null \
+              || echo "(non-JSON response)"
+            exit 1
+          fi
+          # ランタイム生成値は GitHub の自動マスク対象外なので即マスクする。
+          echo "::add-mask::$DEVICE_SECRET"
+          echo "Paired device_id=${DEVICE_ID} for tenant=${TENANT_ID} (secret masked)"
+
+          export DEPLOY_SSH_USER="${KAGOYA_VPS_HOST%%@*}"
+          export DEPLOY_SSH_HOST="${KAGOYA_VPS_HOST##*@}"
+          export TENANT_ID DEVICE_ID DEVICE_SECRET AUTH_WORKER_URL
+          bash scripts/provision-remote.sh
+
+          echo "### Provision: device paired for tenant \`${TENANT_ID}\` & .env updated on Kagoya VPS (device_id=\`${DEVICE_ID}\`)" >> "$GITHUB_STEP_SUMMARY"
