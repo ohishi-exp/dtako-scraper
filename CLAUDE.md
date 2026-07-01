@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-Dtakolog CSV スクレイパー。theearth-np.com から csvdata.zip を自動取得し、daiun-salary API にアップロードする。
+Dtakolog CSV スクレイパー。theearth-np.com から csvdata.zip を自動取得し、
+rust-alc-api (`POST /api/upload`) にアップロードする (daiun-salary への送信ではない、下記
+「運用上の罠」参照)。
 
 ## Tech Stack
 
@@ -38,41 +40,92 @@ KAGOYA_VPS_HOST="ubuntu@<vps-ip>" ./scripts/deploy.sh
 
 ## Config (環境変数)
 
-- `DTAKO_ACCOUNTS` — 企業アカウント JSON 配列
-- `DAIUN_SALARY_URL` — **変数名は歴史的経緯で "daiun-salary" だが、実体は rust-alc-api の Cloud Run URL**
-  (`https://rust-alc-api-xxxxx.run.app`)。daiun-salary (別リポジトリ・別サービス) ではない。要注意
-  (2026-07-01 に混同による誤修正が発生、下記「運用上の罠」参照)
+- `DTAKO_ACCOUNTS` — 企業アカウント JSON 配列 (`comp_id`/`user_name`/`user_pass`/`tenant_id`)。
+  企業ごとに `tenant_id` が異なりうる (マルチテナント)
+- `AUTH_WORKER_URL` — auth-worker URL (device token 発行 + `/device-data-proxy` 経由で
+  rust-alc-api に到達する。default `https://auth.ippoan.org`)
+- `DTAKO_DEVICE_CREDENTIALS` — `tenant_id -> {device_id, device_secret}` の JSON。
+  rust-alc-api への upload に使う device credential。`.github/workflows/provision-device.yml`
+  が tenant ごとに発行して VPS の `.env` に自動投入する (下記「運用上の罠」参照)
 - `DOWNLOAD_DIR` — ダウンロード先
 - `PORT` — サーバーポート (default: 8080)
 - `CHROME_PATH` — Chrome/headless-shell パス
 
+旧 `DAIUN_SALARY_URL` (直接 rust-alc-api の Cloud Run URL を叩く方式) は device credential
+方式への移行 (2026-07-01) に伴い廃止。
+
 ## Related Projects
 
-- `/home/yhonda/rust/rust-alc-api` — **実際のアップロード先** (`DAIUN_SALARY_URL` env var の実体)。
-  `crates/alc-dtako/src/dtako_upload.rs::upload_zip` (`POST /api/upload`) が受け口
+- `/home/yhonda/rust/rust-alc-api` — **実際のアップロード先**。
+  `crates/alc-dtako/src/dtako_upload.rs::upload_zip` (`POST /api/upload`) が受け口。
+  本番 Cloud Run は #434 lockdown 済みのため、直接 HTTP POST ではなく auth-worker
+  `/device-data-proxy` 経由でしか到達できない
+- `/home/yhonda/rust/auth-worker` — device credential の発行元 (`/device/pair-internal`,
+  `/device/token`, `/device-data-proxy`)
 - `/home/yhonda/rust/daiun-salary` — 別プロジェクト (北海大運の給与管理システム)。**アップロード先ではない**
-- `/home/yhonda/rust/browser-render_rust` — 参考実装（chromiumoxide パターン）
+  (2026-07-01 に一度誤認して `/internal/upload` に変更する事故があった、下記参照)
+- `/home/yhonda/rust/browser-render_rust` — dtakolog 送信で同じ device credential 方式
+  (`device-dtako-ingest` role 共用) を先行実装した参考実装。`src/device_auth.rs` /
+  `.github/workflows/provision-device.yml` が移植元
 
 <!-- migrated from memory/feedback_*.md (2026-05-11) -->
 
 ## 運用上の罠
 
-### アップロード先は rust-alc-api の `/api/upload` (daiun-salary ではない、`/internal/upload` は誤り)
+### アップロード先は rust-alc-api の `/api/upload`、device credential 経由でしか到達できない (Refs #14, rust-alc-api#434)
 
-`DAIUN_SALARY_URL` という変数名から daiun-salary (別リポジトリ) への送信だと誤解しやすいが、
-**実体は rust-alc-api の Cloud Run URL**。正しい送信先は rust-alc-api の
-`crates/alc-dtako/src/dtako_upload.rs::upload_zip` (`POST /api/upload`、`require_tenant_header`
-配下)。multipart の `file` フィールドに ZIP、`X-Tenant-ID` ヘッダーでテナント識別する。
+2026-07-01 に本番で `POST /api/upload` が 403 Forbidden で失敗する事故があり、調査過程で
+以下が判明・確定した:
 
-**2026-07-01 に daiun-salary だと誤認して `/internal/upload` (daiun-salary 側のパスで
-rust-alc-api には存在しない) に変更する誤修正が一度 merge された。`/api/upload` に訂正済み。**
+1. **`DAIUN_SALARY_URL` という旧 env var 名から daiun-salary (別リポジトリ) への送信だと
+   誤解しやすいが、実体は rust-alc-api の Cloud Run URL** だった。一時的に daiun-salary の
+   実装だと誤認して `/internal/upload` (daiun-salary 側のパスで rust-alc-api には存在しない)
+   に変更する誤修正が merge されたが、`/api/upload` (`crates/alc-dtako/src/dtako_upload.rs::
+   upload_zip`、`require_tenant_header` 配下) に訂正済み
+2. しかし `/api/upload` 自体が正しくても、rust-alc-api 本番 Cloud Run は **#434 (Cloud Run
+   IAM lockdown)** で `allUsers` invoker 権限が撤去済みのため、直接 HTTP POST は
+   **Google Front End (GFE) レベルで 403 Forbidden になる** (`<title>403 Forbidden</title>`
+   `Your client does not have permission to get URL ... from this server.` という定型文言)
+3. 恒久対応として、browser-render-rust が先行実装していた **device credential +
+   auth-worker `/device-data-proxy` 経由**の方式に移行した (`src/device_auth.rs` /
+   `src/scraper/upload.rs`)。`{AUTH_WORKER_URL}/device-data-proxy/api/upload` を
+   device JWT (`Authorization: Bearer`) 付きで叩く。X-Tenant-ID は device JWT の
+   `tenant_id` claim から proxy が注入するため、client からは送らない (送っても無視される)
 
-`/api/upload` 自体は昔から正しいパスだったが、この頃 rust-alc-api が **#434 (Cloud Run IAM
-lockdown)** で本番 backend の `allUsers` invoker 権限を撤去したため、アプリ層のパス・ヘッダーが
-正しくても **Google Front End (GFE) レベルで 403 Forbidden になる** (`<title>403 Forbidden</title>`
-`Your client does not have permission to get URL ... from this server.` という定型文言はこれ)。
-恒久対応には OIDC ID token の発行、または auth-worker `/alc-proxy` 経由へのルーティング変更など
-アーキテクチャ判断が必要 (Refs rust-alc-api#434)。
+#### マルチテナント対応 (browser-render-rust との違い)
+
+browser-render-rust は 1 device credential = 1 tenant 固定だが、dtako-scraper は
+`DTAKO_ACCOUNTS` の企業ごとに `tenant_id` が異なりうる。**device-data-proxy は JWT に
+焼き込まれた tenant_id claim を無条件に信頼する**ため (なりすまし防止の要)、1 credential
+では複数 tenant を跨げない → **`DTAKO_DEVICE_CREDENTIALS` で tenant_id ごとに credential
+を保持し、account.tenant_id でルックアップして使う**。
+
+**wrong-tenant silent write に注意**: VPS の `.env` に tenant A の credential を tenant B の
+キーで誤登録すると、200 成功のまま別テナントに書き込まれてしまう (proxy 側は forbidden を
+返さない)。`src/device_auth.rs::mint_device_token_for_tenant` が `/device/token` 応答の
+`tenant_id` と呼び出し元が期待する `tenant_id` を assert し、不一致なら loud fail する
+(唯一のクライアント側防御)。
+
+#### role は browser-render-rust と共用 (`device-dtako-ingest`)
+
+新規 role を切らず、既存 `device-dtako-ingest` role の allowlist に `/api/upload` を追加する
+方針にした (ippoan/auth-worker#341)。理由: browser-render-rust (dtakolog bulk ingest) と
+dtako-scraper (ZIP upload) は同一 Kagoya VPS・同一運用チーム・同一機能ドメイン (dtako データの
+rust-alc-api への ingest) であり、role を分けるとメンテナンスコストが増えるだけで
+セキュリティ上のメリットが薄い。device credential (device_id/device_secret) 自体は
+サービス・テナントごとに個別発行するため、rotate/revoke の粒度は role 統一後も維持される。
+
+#### device credential の provision
+
+`.github/workflows/provision-device.yml` (手動 `workflow_dispatch`) が tenant_id ごとに
+`/device/pair-internal` を叩いて device credential を発行し、`scripts/provision-remote.sh`
+経由で VPS の `.env` の `DTAKO_DEVICE_CREDENTIALS` に merge + container 再起動する。
+
+- Actions → **Provision device credential** → Run workflow で `tenant_id` を入力して実行
+- **企業 (tenant) を追加するたびに、その tenant_id で 1 回実行する必要がある**
+  (browser-render-rust の 1-tenant-固定運用とは異なる)
+- `INTERNAL_SHARED_SECRET` は ohishi-exp org secret (browser-render-rust と共用、CI にだけ
+  置く。VPS には配らない)
 
 ### 同一 comp_id への並列 `/scrape` は race condition
 
@@ -137,6 +190,7 @@ PR を main に向ける (= deploy.yml 起動)
 | `KAGOYA_VPS_SSH_KEY` | org | Kagoya VPS 用 SSH 秘密鍵 |
 | `KAGOYA_VPS_HOST` | org | `ubuntu@<IP>` (browser-render と同 VPS) |
 | `CI_APP_ID` / `CI_APP_PRIVATE_KEY` | org (既存) | auto-merge job (ci-workflows/auto-merge.yml) が App token で merge するため。cross-org caller なので deploy.yml で `secrets:` 明示渡し |
+| `INTERNAL_SHARED_SECRET` | org (browser-render-rust と共用) | `provision-device.yml` が auth-worker `/device/pair-internal` を叩くため |
 
 #### VPS 側の前提 (一度だけ準備)
 

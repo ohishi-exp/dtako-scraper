@@ -6,7 +6,7 @@ pub mod upload;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use crate::config::Account;
+use crate::config::{Account, DeviceCredential};
 use crate::error::ScraperError;
 
 /// 進捗イベント
@@ -22,12 +22,14 @@ pub struct ProgressEvent {
 }
 
 /// 1企業分のスクレイピング実行
+#[allow(clippy::too_many_arguments)]
 pub async fn scrape(
     account: &Account,
     start_date: &str,
     end_date: &str,
     download_dir: &str,
-    daiun_salary_url: &str,
+    auth_worker_url: &str,
+    device_credential: Option<&DeviceCredential>,
     skip_upload: bool,
     progress_tx: Option<&mpsc::Sender<ProgressEvent>>,
 ) -> Result<String, ScraperError> {
@@ -89,9 +91,17 @@ pub async fn scrape(
         );
         format!("Download only. ZIP: {}", zip_path.display())
     } else {
-        // daiun-salary にアップロード
+        // rust-alc-api に device credential 経由でアップロード
         send_progress(progress_tx, comp_id, "upload").await;
-        let uploaded = upload::upload_zip(daiun_salary_url, &account.tenant_id, &zip_path).await?;
+        let credential = device_credential.ok_or_else(|| {
+            ScraperError::Upload(format!(
+                "no device credential for tenant_id={} (comp_id={}). \
+                 DTAKO_DEVICE_CREDENTIALS に未登録の可能性。provision-device.yml を確認",
+                account.tenant_id, comp_id
+            ))
+        })?;
+        let uploaded =
+            upload::upload_zip(auth_worker_url, credential, &account.tenant_id, &zip_path).await?;
         // クリーンアップ
         let _ = std::fs::remove_dir_all(&account_dir);
         uploaded

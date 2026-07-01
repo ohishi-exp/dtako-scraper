@@ -2,14 +2,26 @@ use std::path::PathBuf;
 
 use tracing::{error, info};
 
+use crate::config::DeviceCredential;
+use crate::device_auth::mint_device_token_for_tenant;
 use crate::error::ScraperError;
 
-/// rust-alc-api (env var 名は `DAIUN_SALARY_URL` だが実体は rust-alc-api の Cloud Run URL) の
-/// `POST /api/upload` (crates/alc-dtako/src/dtako_upload.rs::upload_zip、require_tenant_header
-/// 配下) に ZIP ファイルを送信する。`/internal/upload` は daiun-salary (別リポジトリ) のパスで
-/// rust-alc-api には存在しないため誤り (2026-07-01 の誤修正、以降訂正)。
+/// rust-alc-api の `POST /api/upload` に、auth-worker の `/device-data-proxy` 経由で
+/// ZIP ファイルを送信する。
+///
+/// rust-alc-api 本番 Cloud Run は #434 lockdown で `allUsers` invoker 権限が撤去済みのため、
+/// 直接 HTTP POST は Google Front End レベルで 403 Forbidden になる (2026-07-01 に判明)。
+/// device credential (`DTAKO_DEVICE_CREDENTIALS`、tenant_id ごとに 1 組) で device JWT を
+/// mint し、`{AUTH_WORKER_URL}/device-data-proxy/api/upload` を `Authorization: Bearer <jwt>`
+/// で叩く (browser-render-rust の dtakolog 送信と同じ device-dtako-ingest role を共用、
+/// Refs ippoan/auth-worker#341, rust-alc-api#434)。
+///
+/// device-data-proxy は JWT に焼き込まれた `tenant_id` claim を信頼して `X-Tenant-ID` を
+/// 注入するため、client 側の `X-Tenant-ID` ヘッダーや multipart `tenant_id` フィールドは
+/// 送らない (送っても proxy 側で無視される)。
 pub async fn upload_zip(
-    daiun_salary_url: &str,
+    auth_worker_url: &str,
+    credential: &DeviceCredential,
     tenant_id: &str,
     zip_path: &PathBuf,
 ) -> Result<String, ScraperError> {
@@ -22,10 +34,22 @@ pub async fn upload_zip(
         .to_string_lossy()
         .to_string();
 
-    let url = format!("{}/api/upload", daiun_salary_url);
+    let device_jwt = mint_device_token_for_tenant(
+        auth_worker_url,
+        credential,
+        tenant_id,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .map_err(|e| ScraperError::Upload(format!("device token mint failed: {e}")))?;
+
+    let url = format!(
+        "{}/device-data-proxy/api/upload",
+        auth_worker_url.trim_end_matches('/')
+    );
     info!("Uploading {:?} to {} (tenant={})", zip_path, url, tenant_id);
 
-    match send_multipart(&url, tenant_id, &filename, &file_bytes).await {
+    match send_multipart(&url, &device_jwt, &filename, &file_bytes).await {
         Ok(body) => {
             info!("Upload successful: {}", body);
             Ok(body)
@@ -39,7 +63,7 @@ pub async fn upload_zip(
 
 async fn send_multipart(
     url: &str,
-    tenant_id: &str,
+    device_jwt: &str,
     filename: &str,
     file_bytes: &[u8],
 ) -> Result<String, String> {
@@ -48,14 +72,12 @@ async fn send_multipart(
         .mime_str("application/zip")
         .map_err(|e| format!("MIME: {e}"))?;
 
-    let form = reqwest::multipart::Form::new()
-        .text("tenant_id", tenant_id.to_string())
-        .part("file", file_part);
+    let form = reqwest::multipart::Form::new().part("file", file_part);
 
     let client = reqwest::Client::new();
     let resp = client
         .post(url)
-        .header("X-Tenant-ID", tenant_id)
+        .header("Authorization", format!("Bearer {device_jwt}"))
         .multipart(form)
         .timeout(std::time::Duration::from_secs(180))
         .send()
