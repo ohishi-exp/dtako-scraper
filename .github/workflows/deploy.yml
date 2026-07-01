@@ -12,6 +12,14 @@ name: Deploy
 on:
   pull_request:
     branches: [main]
+  # main への merge (push) では VPS への再 deploy はしない (PR 時点で既に preview
+  # deploy 済みのため冗長)。それでも push トリガーを持たせるのは、Swatinem/
+  # rust-cache の save-if (下記 test job) が `github.ref == 'refs/heads/main'`
+  # を書き戻し条件にしており、push トリガーが無いと **一生キャッシュが更新
+  # されない**バグがあったため (browser-render-rust の ci.yml は push: master
+  # を持つのでこの問題が起きない、2026-07-01 に発覚・修正)。
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -34,10 +42,16 @@ env:
   CONTAINER_NAME: dtako-scraper
   VPS_APP_DIR: /opt/dtako-scraper
 
-# 同時に複数 PR の deploy が走ると VPS 上の container を奪い合うので、
-# repo 全体で 1 つに直列化する。新 PR push が来たら走行中の古い run は cancel。
+# workflow 全体の concurrency は「同一 PR / ref の古い CI run をキャンセルする」目的
+# だけに絞る (通常の CI hygiene、他 PR の run には影響しない)。VPS に実際に触れる
+# のは `deploy` job だけなので、VPS の直列化はそちらの job-level concurrency
+# (`group: deploy-vps`) で行う。以前は workflow 全体を `deploy-vps` group +
+# cancel-in-progress:true にしていたが、これだと**他 PR の deploy job が SSH 中でも
+# 新しい PR push でキャンセルされ VPS が壊れた状態 (container stop 済み/未起動)
+# になるリスク**があった (browser-render-rust の ci.yml deploy job は
+# cancel-in-progress:false でこれを避けている、2026-07-01 修正)。
 concurrency:
-  group: deploy-vps
+  group: dtako-scraper-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -141,7 +155,18 @@ jobs:
 
   deploy:
     name: SSH deploy to VPS
+    # main への push (merge) では VPS deploy をしない — PR 時点で既にその commit が
+    # preview deploy 済みのため冗長 (push トリガーの目的は test job のキャッシュ
+    # 書き戻しのみ、上記 on: push のコメント参照)。
+    if: github.event_name != 'push'
     needs: build
+    # VPS に実際に触れる job だけをこの group で直列化する。cancel-in-progress:false
+    # で「先行 run の deploy を殺さず完走を待つ」(browser-render-rust の
+    # deploy-kagoya-vps job と同じ安全策)。provision-device.yml も同じ group +
+    # cancel-in-progress:false を使う (両者が同時に VPS の container を触るのを防ぐ)。
+    concurrency:
+      group: deploy-vps
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - name: Set up SSH agent

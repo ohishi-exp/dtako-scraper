@@ -124,8 +124,17 @@ rust-alc-api への ingest) であり、role を分けるとメンテナンス�
 - Actions → **Provision device credential** → Run workflow で `tenant_id` を入力して実行
 - **企業 (tenant) を追加するたびに、その tenant_id で 1 回実行する必要がある**
   (browser-render-rust の 1-tenant-固定運用とは異なる)
+- **`tenant_id` 欄には UUID (rust-alc-api の `tenants.id`) を入れる。`comp_id` (数字、
+  例: `27324455`) を間違えて入れないこと** — 2026-07-01 に一度誤入力しかけた事例あり
 - `INTERNAL_SHARED_SECRET` は ohishi-exp org secret (browser-render-rust と共用、CI にだけ
   置く。VPS には配らない)
+
+**初回実行時の既知バグ (2026-07-01、修正済み)**: `scripts/provision-remote.sh` に GHCR
+ログインが無く、`docker run` が `Unable to find image ... denied` で失敗した (`.env` の
+`DTAKO_DEVICE_CREDENTIALS` 自体は正常に書き込まれるが container 再起動だけ失敗する)。
+deploy.yml と同じ GHCR login パターン (CI の job 限り `GITHUB_TOKEN` → 無ければ VPS の
+`.env` の `GHCR_TOKEN` に fallback) を追加して修正した。同じ症状が再発したら
+`docker login ghcr.io` 周りを疑う。
 
 ### 同一 comp_id への並列 `/scrape` は race condition
 
@@ -172,6 +181,38 @@ PR を main に向ける (= deploy.yml 起動)
 - concurrency: `deploy-vps` で同時走行を直列化 (新 PR push は走行中の古い run を cancel)
 - 緊急 deploy: `gh workflow run deploy.yml -f ref=<sha-or-branch>` (workflow_dispatch)
   または手元から `KAGOYA_VPS_HOST=ubuntu@... ./scripts/deploy.sh`
+
+#### concurrency は 2 階層 (2026-07-01 修正、browser-render-rust に揃えた)
+
+- **workflow 全体**: `group: dtako-scraper-ci-<PR番号 or ref>` + `cancel-in-progress: true`。
+  同一 PR への新規 push で古い CI run (test/build) をキャンセルする通常の CI hygiene 用。
+  他 PR の run には影響しない。
+- **`deploy` job だけ**: `group: deploy-vps` + `cancel-in-progress: false`
+  (job-level concurrency)。VPS に実際に触れる操作 (docker stop/rm/run) はこの group で
+  直列化するが、先行 run を kill せず完走を待つ。`provision-device.yml` も同じ
+  `deploy-vps` group + `cancel-in-progress: false` を使うので、deploy と provision が
+  同時に VPS の container を取り合っても片方が完走してからもう片方が始まる。
+
+**以前は workflow 全体を `deploy-vps` group + `cancel-in-progress:true` にしていたが、
+これだと他 PR の deploy job が SSH 中 (docker stop/rm 済み・run 前) でも新しい PR push で
+キャンセルされ、VPS の container が停止したまま再起動されない事故が起こり得た**
+(browser-render-rust の `ci.yml` `deploy` job は元から job-level `cancel-in-progress:false`
+でこれを避けている設計だった)。
+
+#### `push: branches: [main]` トリガー (cache 書き戻し専用、2026-07-01 追加)
+
+`test` job の Swatinem/rust-cache は `save-if: github.event_name == 'workflow_dispatch' ||
+github.ref == 'refs/heads/main'` だが、**deploy.yml が元々 `pull_request` トリガーしか
+持たなかったため、この条件が (手動 workflow_dispatch を除いて) 一生 true にならず
+sccache/rust-cache が実質更新されないバグがあった** (browser-render-rust の `ci.yml` は
+`push: [master]` を持つのでこの問題が起きない)。
+
+`push: branches: [main]` を追加してこれを解消したが、**`deploy` job は
+`if: github.event_name != 'push'` で push イベント時は skip する** (main merge 時点の
+commit は PR の時点で既に VPS に preview deploy 済みのため、push 時の再 deploy は冗長)。
+push イベントで走るのは `test` (cache 書き戻し) と `build` (docker `:latest` タグの GHA
+layer cache 書き戻し) のみ。`disable-auto-merge`/`auto-merge` job は元々
+`github.event_name == 'pull_request'` 限定なので push イベントでは走らない (影響なし)。
 
 #### 機密の扱い
 

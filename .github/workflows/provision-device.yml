@@ -32,6 +32,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 # 通常 deploy (deploy.yml deploy job) と同じ Kagoya VPS を触るので同一 group で直列化する。
 concurrency:
@@ -68,6 +69,9 @@ jobs:
           TENANT_ID: ${{ inputs.tenant_id }}
           DEVICE_LABEL: ${{ inputs.label }}
           KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
+          # VPS 側 docker pull 用 (deploy.yml と同パターン、job 限りの GITHUB_TOKEN)。
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
           set -euo pipefail
           if [ -z "${INTERNAL_SHARED_SECRET:-}" ]; then
@@ -105,7 +109,7 @@ jobs:
 
           export DEPLOY_SSH_USER="${KAGOYA_VPS_HOST%%@*}"
           export DEPLOY_SSH_HOST="${KAGOYA_VPS_HOST##*@}"
-          export TENANT_ID DEVICE_ID DEVICE_SECRET AUTH_WORKER_URL
+          export TENANT_ID DEVICE_ID DEVICE_SECRET AUTH_WORKER_URL GHCR_TOKEN GHCR_USER
           bash scripts/provision-remote.sh
 
           echo "### Provision: device paired for tenant \`${TENANT_ID}\` & .env updated on Kagoya VPS (device_id=\`${DEVICE_ID}\`)" >> "$GITHUB_STEP_SUMMARY"

@@ -21,6 +21,10 @@
 #   APP_DIR           … VPS 上のアプリディレクトリ (default: /opt/dtako-scraper)
 #   DEPLOY_HEALTH_PORT … health check する remote localhost ポート (default: 8081)
 #   IMAGE             … 再起動に使う image (default: ghcr.io/ohishi-exp/dtako-scraper:latest)
+#   GHCR_TOKEN / GHCR_USER … remote docker pull 用の GHCR credential。CI からは
+#                            job 限りの ${{ secrets.GITHUB_TOKEN }} (packages:read) +
+#                            ${{ github.actor }} を渡す想定 (deploy.yml と同パターン)。
+#                            未指定なら VPS 側 .env の GHCR_TOKEN に fallback
 #
 # 失敗 (ssh / health) は即 exit != 0 で loud fail する。
 set -euo pipefail
@@ -36,13 +40,15 @@ CONTAINER_NAME="${CONTAINER_NAME:-dtako-scraper}"
 APP_DIR="${APP_DIR:-/opt/dtako-scraper}"
 HEALTH_PORT="${DEPLOY_HEALTH_PORT:-8081}"
 IMAGE="${IMAGE:-ghcr.io/ohishi-exp/dtako-scraper:latest}"
+GHCR_TOKEN="${GHCR_TOKEN:-}"
+GHCR_USER="${GHCR_USER:-ohishi-exp}"
 
 echo "=== Provisioning device credential on ${TARGET} (tenant=${TENANT_ID}) ==="
 
 # secret は SSH env-var 前置き経路でのみ渡す (positional arg / heredoc 埋め込みにしない)。
 if ! ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$TARGET" \
     TENANT_ID="$TENANT_ID" DEVICE_ID="$DEVICE_ID" DEVICE_SECRET="$DEVICE_SECRET" \
-    AUTH_WORKER_URL="$AUTH_WORKER_URL" \
+    AUTH_WORKER_URL="$AUTH_WORKER_URL" GHCR_TOKEN="$GHCR_TOKEN" GHCR_USER="$GHCR_USER" \
     bash -s -- "$IMAGE" "$CONTAINER_NAME" "$APP_DIR" "$HEALTH_PORT" <<'REMOTE_SCRIPT'
 set -e
 IMAGE="$1"
@@ -50,6 +56,19 @@ CONTAINER_NAME="$2"
 APP_DIR="$3"
 HEALTH_PORT="$4"
 ENV_FILE="$APP_DIR/.env"
+
+# GHCR ログイン。CI から渡された job 限りの GHCR_TOKEN (packages:read) を優先し、
+# 未指定なら VPS 側 .env の静的 GHCR_TOKEN に fallback する (deploy.yml と同パターン)。
+if [ -n "${GHCR_TOKEN:-}" ]; then
+    echo "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-ohishi-exp}" --password-stdin >/dev/null
+elif [ -f "$ENV_FILE" ]; then
+    FALLBACK_TOKEN=$(grep -E '^GHCR_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)
+    if [ -n "$FALLBACK_TOKEN" ]; then
+        echo "$FALLBACK_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin >/dev/null
+    else
+        echo "no GHCR token (CI or .env); assuming docker is already logged in to GHCR"
+    fi
+fi
 
 touch "$ENV_FILE"
 chmod 600 "$ENV_FILE"
@@ -74,6 +93,9 @@ printf 'DTAKO_DEVICE_CREDENTIALS=%s\n' "$new" >> "$tmp"
 chmod 600 "$tmp"
 mv "$tmp" "$ENV_FILE"
 echo "  .env updated: DTAKO_DEVICE_CREDENTIALS (tenant=${TENANT_ID})"
+
+echo "Pulling $IMAGE ..."
+docker pull "$IMAGE"
 
 echo 'Restarting container with updated .env...'
 docker stop "$CONTAINER_NAME" 2>/dev/null || true
