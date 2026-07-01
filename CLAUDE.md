@@ -182,6 +182,23 @@ PR を main に向ける (= deploy.yml 起動)
 - 緊急 deploy: `gh workflow run deploy.yml -f ref=<sha-or-branch>` (workflow_dispatch)
   または手元から `KAGOYA_VPS_HOST=ubuntu@... ./scripts/deploy.sh`
 
+#### concurrency は 2 階層 (2026-07-01 修正、browser-render-rust に揃えた)
+
+- **workflow 全体**: `group: dtako-scraper-ci-<PR番号 or ref>` + `cancel-in-progress: true`。
+  同一 PR への新規 push で古い CI run (test/build) をキャンセルする通常の CI hygiene 用。
+  他 PR の run には影響しない。
+- **`deploy` job だけ**: `group: deploy-vps` + `cancel-in-progress: false`
+  (job-level concurrency)。VPS に実際に触れる操作 (docker stop/rm/run) はこの group で
+  直列化するが、先行 run を kill せず完走を待つ。`provision-device.yml` も同じ
+  `deploy-vps` group + `cancel-in-progress: false` を使うので、deploy と provision が
+  同時に VPS の container を取り合っても片方が完走してからもう片方が始まる。
+
+**以前は workflow 全体を `deploy-vps` group + `cancel-in-progress:true` にしていたが、
+これだと他 PR の deploy job が SSH 中 (docker stop/rm 済み・run 前) でも新しい PR push で
+キャンセルされ、VPS の container が停止したまま再起動されない事故が起こり得た**
+(browser-render-rust の `ci.yml` `deploy` job は元から job-level `cancel-in-progress:false`
+でこれを避けている設計だった)。
+
 #### `push: branches: [main]` トリガー (cache 書き戻し専用、2026-07-01 追加)
 
 `test` job の Swatinem/rust-cache は `save-if: github.event_name == 'workflow_dispatch' ||
