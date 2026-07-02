@@ -9,7 +9,7 @@ description = "Dtakolog CSV スクレイパー - theearth-np.com から csvdata.
 tokio = { version = "1", features = ["full"] }
 
 # Web framework
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 
 # Browser automation (CDP)
 chromiumoxide = { version = "0.8", default-features = false, features = ["tokio-runtime", "_fetcher-native-tokio"] }
