@@ -10,6 +10,10 @@ web地球号 (theearth-np.com) の「映像再生」ビューアで再生され�
 リファレンス実装: [`scripts/vdf_extract.py`](../scripts/vdf_extract.py)
 (前方/後方 MP4 + 速度/回転/Gセンサー/GPS の CSV を出力)。
 
+関連: [`net780-binary-format.md`](./net780-binary-format.md) — 同じ NET780 機器が吐く
+**運行単位の生データ ZIP** (.spd/.gpd/.rvd 等) の仕様。本ドキュメントはそれとは別系統の
+**イベント映像ファイル (.vdf)** を扱う。
+
 ## ファイル名規約 (観測ベース)
 
 ```
