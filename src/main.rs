@@ -9,14 +9,17 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
 use chrono::{FixedOffset, Utc};
-use futures::stream::Stream;
+use futures::stream::{Stream, StreamExt};
+use futures::SinkExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
@@ -74,11 +77,12 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
-async fn scrape_handler(
-    State(state): State<AppState>,
-    Json(req): Json<ScrapeRequest>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
-    let accounts: Vec<_> = if let Some(ref comp_id) = req.comp_id {
+/// リクエストに合致する account を解決し、無ければ Err を返す
+fn resolve_accounts(
+    state: &AppState,
+    comp_id: &Option<String>,
+) -> Result<Vec<config::Account>, (StatusCode, String)> {
+    let accounts: Vec<_> = if let Some(ref comp_id) = comp_id {
         state
             .config
             .accounts
@@ -94,6 +98,31 @@ async fn scrape_handler(
         return Err((StatusCode::BAD_REQUEST, "No matching accounts".into()));
     }
 
+    Ok(accounts)
+}
+
+/// スクレイプジョブを spawn し、各イベントを JSON 文字列として受け取れる channel を返す。
+/// SSE (`/scrape`) と WebSocket (`/scrape/ws`) の両ハンドラがこれを共有する
+/// (プロトコル差はイベントの運び方だけで、中身の JSON は同一)。
+fn spawn_scrape_job(state: AppState, req: ScrapeRequest) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel::<String>(32);
+
+    let accounts = match resolve_accounts(&state, &req.comp_id) {
+        Ok(a) => a,
+        Err((_, msg)) => {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                    "event": "error",
+                    "message": msg,
+                })) {
+                    let _ = tx.send(json).await;
+                }
+            });
+            return rx;
+        }
+    };
+
     let jst = FixedOffset::east_opt(9 * 3600).unwrap();
     let yesterday = (Utc::now().with_timezone(&jst) - chrono::Duration::days(1))
         .format("%Y-%m-%d")
@@ -104,17 +133,15 @@ async fn scrape_handler(
     let config = state.config.clone();
     let comp_locks = state.comp_locks.clone();
 
-    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
-
     tokio::spawn(async move {
         let (progress_tx, mut progress_rx) = mpsc::channel::<ProgressEvent>(32);
 
-        // 進捗イベントを SSE に変換して送信するタスク
+        // 進捗イベントを JSON 文字列に変換して送信するタスク
         let tx_clone = tx.clone();
         let progress_forwarder = tokio::spawn(async move {
             while let Some(evt) = progress_rx.recv().await {
                 if let Ok(json) = serde_json::to_string(&evt) {
-                    let _ = tx_clone.send(Ok(Event::default().data(json))).await;
+                    let _ = tx_clone.send(json).await;
                 }
             }
         });
@@ -170,7 +197,7 @@ async fn scrape_handler(
                 status: Some(scrape_result.status.clone()),
                 message: Some(scrape_result.message.clone()),
             }) {
-                let _ = tx.send(Ok(Event::default().data(json))).await;
+                let _ = tx.send(json).await;
             }
 
             results.push(scrape_result);
@@ -201,14 +228,42 @@ async fn scrape_handler(
 
         // 完了イベント
         let _ = tx
-            .send(Ok(
-                Event::default().data(serde_json::json!({"event": "done"}).to_string())
-            ))
+            .send(serde_json::json!({"event": "done"}).to_string())
             .await;
     });
 
-    let stream = ReceiverStream::new(rx);
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    rx
+}
+
+async fn scrape_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ScrapeRequest>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = spawn_scrape_job(state, req);
+    let stream = ReceiverStream::new(rx).map(|json| Ok(Event::default().data(json)));
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// WebSocket 版 `/scrape` (front Worker 専用、Refs dtako-scraper#403修正 の続き)。
+/// GET + upgrade のため、パラメータは query string で受ける (`ScrapeRequest` と同一 shape)。
+/// イベントの JSON は SSE 版と完全に同一 (data フィールド無しでそのまま text frame に載せる)。
+async fn scrape_ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(req): Query<ScrapeRequest>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_scrape_ws(socket, state, req))
+}
+
+async fn handle_scrape_ws(mut socket: WebSocket, state: AppState, req: ScrapeRequest) {
+    let mut rx = spawn_scrape_job(state, req);
+    while let Some(json) = rx.recv().await {
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            warn!("scrape ws: client disconnected");
+            return;
+        }
+    }
+    let _ = socket.close().await;
 }
 
 #[tokio::main]
@@ -241,6 +296,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/scrape", post(scrape_handler))
+        .route("/scrape/ws", get(scrape_ws_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
