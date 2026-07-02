@@ -1,0 +1,9 @@
+[package]
+name = "net780"
+version = "0.1.0"
+edition = "2021"
+description = "NET780 デジタコ生データ (バイナリ ZIP) パーサー"
+
+[dependencies]
+chrono = "0.4"
+thiserror = "2"

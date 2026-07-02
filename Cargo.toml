@@ -1,3 +1,11 @@
+[workspace]
+members = ["crates/net780", "crates/net780-wasm"]
+
+# net780-wasm はブラウザ向け wasm ビルド専用 (wasm32-unknown-unknown ターゲット) なので、
+# host target 向けの通常の `cargo build`/`cargo test` (CI の deploy.yml が叩く既存コマンド)
+# からは対象外にする。net780 (pure lib) は host target でもビルド・テストできるので含める。
+default-members = [".", "crates/net780"]
+
 [package]
 name = "dtako-scraper"
 version = "0.1.0"

@@ -3,6 +3,10 @@
 //! フォーマット解読の詳細・検証結果は `docs/net780-binary-format.md` を SoT とする。
 //! ここは pure 関数中心 (bytes in → struct out) で、ZIP 展開やファイル I/O とは分離する
 //! (Refs #18)。
+//!
+//! `dtako-scraper` バイナリからは (アップロード/API連携が後続 issue のスコープのため)
+//! まだ呼ばれないが、`crates/net780-wasm` がブラウザ向け wasm バインディングとして
+//! 本クレートを消費する。
 
 mod bcd;
 pub mod dsd;
@@ -13,19 +17,11 @@ pub mod inf;
 mod records;
 pub mod spd;
 
-// パース結果のアップロード/API 連携は後続 issue のスコープなので、現時点ではこれらの
-// re-export を消費するコードが無い (dead_code 節参照)。
-#[allow(unused_imports)]
 pub use dsd::DsdRecord;
-#[allow(unused_imports)]
 pub use evd::EvdRecord;
-#[allow(unused_imports)]
 pub use gpd::GpdRecord;
-#[allow(unused_imports)]
 pub use header::CommonHeader;
-#[allow(unused_imports)]
 pub use inf::InfRecord;
-#[allow(unused_imports)]
 pub use spd::{SpdRecord, SpeedSample};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

@@ -12,7 +12,12 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /build
 
 # Dependency caching
+# crates/ (net780 / net780-wasm workspace members) の manifest が無いと workspace
+# 解決自体が失敗するため、ダミー root src より先にコピーする。net780-wasm は
+# default-members に含めていない (wasm32 専用) ので、この `cargo build --release`
+# (host target) では net780 のみが実際にビルドされる。
 COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release -j ${CARGO_BUILD_JOBS} && rm -rf src
 
