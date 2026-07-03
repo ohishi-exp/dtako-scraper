@@ -12,10 +12,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /build
 
 # Dependency caching
-# crates/net780 (workspace member) の manifest が無いと workspace 解決自体が
-# 失敗するため、ダミー root src より先にコピーする。
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release -j ${CARGO_BUILD_JOBS} && rm -rf src
 
