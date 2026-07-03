@@ -1284,14 +1284,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "net780"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

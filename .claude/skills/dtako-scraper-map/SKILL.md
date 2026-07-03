@@ -1,8 +1,8 @@
 ---
 name: dtako-scraper-map
-generated-from: dtako-scraper:b975620ab2602317332fb8edca6abf32596e54d6
-paths: [src/, crates/, docs/net780-binary-format.md, docs/vdf-format.md]
-description: ohishi-exp/dtako-scraper (Rust + Axum + chromiumoxide ヘッドレス Chrome の Dtakolog CSV スクレイパー、および NET780 生データパーサー Cargo workspace) の構造ナビゲーション。theearth-np.com から csvdata.zip を取得 → daiun-salary API に multipart upload する **Kagoya VPS docker service** (browser-render-rust と同 host を共有) の module 配置・SSE 進捗・PR トリガー CI deploy・運用 gotcha に加え、`crates/net780` (NET780 バイナリパーサー lib、SoT) の workspace 構成を 1 枚にまとめる。ブラウザ向け wasm バインディングは別 repo (`ohishi-exp/net780-wasm`) に切り出し済み。トリガー:「dtako-scraper」「Dtakolog」「csvdata.zip」「theearth-np」「chromiumoxide」「headless-shell」「KUDGIVT」「comp_id 並列」「daiun-salary upload」「Kagoya VPS」「VPS deploy」「F-VOS3020」「scrape-vehicle-setting」「net780」「NET780」等。
+generated-from: dtako-scraper:a1d72e2
+paths: [src/, docs/net780-binary-format.md, docs/vdf-format.md]
+description: ohishi-exp/dtako-scraper (Rust + Axum + chromiumoxide ヘッドレス Chrome の Dtakolog CSV スクレイパー) の構造ナビゲーション。theearth-np.com から csvdata.zip を取得 → daiun-salary API に multipart upload する **Kagoya VPS docker service** (browser-render-rust と同 host を共有) の module 配置・SSE 進捗・PR トリガー CI deploy・運用 gotcha を 1 枚にまとめる。NET780 生データパーサー (`crates/net780`) は `ohishi-exp/net780-wasm` (`core/`+`wasm/` workspace) に完全移設済み (2026-07-03、Refs #18/#26) — 本 repo には残っていない。トリガー:「dtako-scraper」「Dtakolog」「csvdata.zip」「theearth-np」「chromiumoxide」「headless-shell」「KUDGIVT」「comp_id 並列」「daiun-salary upload」「Kagoya VPS」「VPS deploy」「F-VOS3020」「scrape-vehicle-setting」等。
 ---
 
 # dtako-scraper-map — ohishi-exp/dtako-scraper 構造ナビゲーション
@@ -27,22 +27,23 @@ theearth-np.com から Dtakolog の `csvdata.zip` を DL → daiun-salary API �
 | └ upload | `src/scraper/upload.rs` | reqwest multipart で daiun-salary に POST |
 | **notify** | `src/notify.rs` | lettre SMTP メール通知 |
 | **error** | `src/error.rs` | `ScraperError` (thiserror) |
-| **net780 (lib)** | `crates/net780/src/lib.rs` 他 | NET780 生データ ZIP パーサー (BCD ヘッダ/.inf/.spd/.dsd/.gpd/.evd)。`dtako-scraper` バイナリからはまだ未配線 (Refs #18) |
 
-## Cargo workspace 構成
+## Cargo workspace 構成 (net780 移設済み、2026-07-03)
 
-- root (`Cargo.toml` の `[package]`) = 従来通りの scraper service バイナリ。
-  `[workspace] members = ["crates/net780"]` — pure lib で host / wasm32 両対応。
-  通常の `cargo build`/`cargo test` (CI の deploy.yml が叩くコマンドそのまま) は
-  root + net780 の両方を対象にする (host target なので net780 も問題なくビルドできる)。
-- **ブラウザ向け wasm バインディングは別 repo `ohishi-exp/net780-wasm` に切り出し済み**
-  (2026-07-03、Refs #18)。あちらの Cargo.toml が
-  `net780 = { git = "https://github.com/ohishi-exp/dtako-scraper", path = "crates/net780" }`
-  として本クレートを参照する。本 repo に `crates/net780-wasm/` を再追加しないこと
-  (一度 workspace member として追加 → 別 repo に切り出す判断で revert した経緯がある)。
-- **Dockerfile の依存キャッシュ層に注意**: `crates/net780/Cargo.toml` が無いと workspace
-  解決自体が失敗するため、ダミー root `src/main.rs` より先に `COPY crates ./crates`
-  している。`crates/` にファイルを追加する時はこの並び順を崩さないこと。
+- root (`Cargo.toml` の `[package]`) = 通常の単一パッケージ scraper service バイナリ。
+  workspace ではない (以前は `crates/net780` を workspace member として同居させて
+  いたが完全撤去済み)。
+- **NET780 生データパーサー (旧 `crates/net780`) は `ohishi-exp/net780-wasm` の
+  `core/` に完全移設済み** (Refs #18、dtako-scraper#26 の `.gpd` marker-scan 修正
+  込み)。理由: net780 crate は dtako-scraper 本体 (scraper バイナリ) から一切
+  参照されておらず、`ohishi-exp/net780-wasm` の git dependency 用にワークスペース
+  メンバーとして残していただけだった。cross-repo (private repo 間) 依存の運用
+  コスト (`git`+`path` 併記不可の罠、修正のたびに 2 repo にまたがる PR が要る等)
+  を避けるため、`ohishi-exp/dtako_vid_wasm` と同じ「`core/`+`wasm/` を 1 repo の
+  workspace に同居」構成に統合した。
+  **`crates/net780/` を本 repo に再追加しないこと** — NET780 パーサーへの変更は
+  `ohishi-exp/net780-wasm` の `core/` で行う。`docs/net780-binary-format.md` /
+  `docs/vdf-format.md` (フォーマット仕様書) は参照用としてこの repo に残っている。
 
 ## entrypoint (`src/main.rs`)
 
