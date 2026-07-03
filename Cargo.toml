@@ -1,9 +1,12 @@
 [workspace]
-members = ["crates/net780", "crates/net780-wasm"]
-
-# net780-wasm はブラウザ向け wasm ビルド専用 (wasm32-unknown-unknown ターゲット) なので、
-# host target 向けの通常の `cargo build`/`cargo test` (CI の deploy.yml が叩く既存コマンド)
-# からは対象外にする。net780 (pure lib) は host target でもビルド・テストできるので含める。
+# crates/net780 (NET780 パーサー、pure lib) は host / wasm32 どちらでもビルド可能。
+# ブラウザ向け wasm バインディングは ohishi-exp/net780-wasm (別 repo) が
+# `net780 = { git = "https://github.com/ohishi-exp/dtako-scraper", path = "crates/net780" }`
+# として本クレートを参照する (Refs #18)。
+members = ["crates/net780"]
+# default-members を明示しないと `cargo test` (deploy.yml、--workspace 無し) が
+# root package だけを対象にし net780 のテストを静かにスキップしてしまうため、
+# 明示的に両方を default に含める。
 default-members = [".", "crates/net780"]
 
 [package]
