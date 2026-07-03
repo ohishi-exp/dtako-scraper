@@ -1,10 +1,6 @@
 mod config;
 mod device_auth;
 mod error;
-// NET780 生データパーサー (Refs #18)。パース結果のアップロード/API連携は後続 issue の
-// スコープなので、現時点では main から呼ばれず dead_code 警告が出る。
-#[allow(dead_code)]
-mod net780;
 mod notify;
 mod scraper;
 

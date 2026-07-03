@@ -3,3 +3,5 @@ target/
 .env.docker
 node_modules/
 playwright-test/
+# wasm-pack build 出力 (crates/net780-wasm/pkg/、ippoan/fc1200-wasm と同じ規約)
+pkg/
