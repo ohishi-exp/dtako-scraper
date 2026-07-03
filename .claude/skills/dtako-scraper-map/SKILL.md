@@ -1,6 +1,6 @@
 ---
 name: dtako-scraper-map
-generated-from: dtako-scraper:edb586107b50717f3ee7f772ea636a0fa65170bb
+generated-from: dtako-scraper:b975620ab2602317332fb8edca6abf32596e54d6
 paths: [src/, crates/, docs/net780-binary-format.md, docs/vdf-format.md]
 description: ohishi-exp/dtako-scraper (Rust + Axum + chromiumoxide ヘッドレス Chrome の Dtakolog CSV スクレイパー、および NET780 生データパーサー Cargo workspace) の構造ナビゲーション。theearth-np.com から csvdata.zip を取得 → daiun-salary API に multipart upload する **Kagoya VPS docker service** (browser-render-rust と同 host を共有) の module 配置・SSE 進捗・PR トリガー CI deploy・運用 gotcha に加え、`crates/net780` (NET780 バイナリパーサー lib、SoT) の workspace 構成を 1 枚にまとめる。ブラウザ向け wasm バインディングは別 repo (`ohishi-exp/net780-wasm`) に切り出し済み。トリガー:「dtako-scraper」「Dtakolog」「csvdata.zip」「theearth-np」「chromiumoxide」「headless-shell」「KUDGIVT」「comp_id 並列」「daiun-salary upload」「Kagoya VPS」「VPS deploy」「F-VOS3020」「scrape-vehicle-setting」「net780」「NET780」等。
 ---
